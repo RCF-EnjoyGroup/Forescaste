@@ -1,0 +1,148 @@
+# Hotel Revenue Forecasting Pipeline Configuration
+# =================================================
+
+# Global settings
+random_seed: 42
+log_level: INFO
+
+# Data configuration
+data:
+  # SQL connection (optional - CSV fallback available)
+  sql:
+    host: ""
+    port: 5432
+    database: ""
+    # Credentials via environment variables: DB_USER, DB_PASSWORD
+  
+  # CSV fallback path
+  csv_path: "data/hotel_data.csv"
+  
+  # Required columns
+  required_columns:
+    - date
+    - hotel_id
+    - revenue
+    - room_revenue
+
+# Preprocessing configuration
+preprocessing:
+  # Missing value handling
+  missing_values:
+    strategy: "ffill_bfill"  # ffill_bfill, interpolation, dropna
+    max_gap: 7  # days
+  
+  # Outlier handling
+  outliers:
+    method: "iqr"  # iqr, zscore, winsorize
+    threshold: 1.5  # IQR multiplier or z-score threshold
+    winsorize_limits: [0.01, 0.99]
+    action: "flag"  # flag, cap, remove
+  
+  # Feature engineering
+  features:
+    lags: [1, 7, 14, 30, 365]
+    rolling_windows: [7, 14, 30, 90]
+    rolling_stats: ["mean", "std", "min", "max"]
+    expanding_stats: ["mean", "std"]
+    cyclical_features: ["dayofweek", "dayofyear", "month"]
+  
+  # Temporal split
+  split:
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    gap_days: 7
+
+# Modeling configuration
+models:
+  # Statistical models
+  statistical:
+    prophet:
+      changepoint_prior_scale: 0.05
+      seasonality_prior_scale: 10.0
+      holidays_prior_scale: 10.0
+      yearly_seasonality: true
+      weekly_seasonality: true
+      daily_seasonality: false
+    
+    sarimax:
+      seasonal_periods: [7]  # m=365 makes auto_arima intractably slow; yearly handled by other models
+      stepwise: true
+      max_p: 3
+      max_q: 3
+      max_P: 2
+      max_Q: 2
+    
+    ets:
+      seasonal_periods: 7
+      damped_trend: true
+      auto_select: true
+  
+  # ML models
+  ml:
+    lightgbm:
+      objective: "regression"
+      metric: "mae"
+      early_stopping_rounds: 50
+      categorical_features: ["hotel_id"]
+    
+    xgboost:
+      objective: "reg:squarederror"
+      eval_metric: "mae"
+      early_stopping_rounds: 50
+    
+    catboost:
+      loss_function: "MAE"
+      cat_features: ["hotel_id"]
+      early_stopping_rounds: 50
+  
+  # DL models
+  dl:
+    timesfm:
+      checkpoint: "timesfm-1.0-200m"
+      context_len: 512
+      horizon: 30
+    
+    patchtst:
+      patch_len: 16
+      stride: 8
+      d_model: 128
+      n_heads: 8
+      n_layers: 3
+      dropout: 0.1
+      lr: 0.001
+      epochs: 100
+      batch_size: 32
+      patience: 10
+
+# Evaluation configuration
+evaluation:
+  metrics:
+    - MAE
+    - RMSE
+    - MAPE
+    - sMAPE
+    - MASE
+    - WAPE
+  
+  cross_validation:
+    n_splits: 5
+    expanding: true
+  
+  significance_test:
+    test: "diebold_mariano"
+    alpha: 0.05
+
+# Forecasting configuration
+forecasting:
+  horizon_days: 90
+  confidence_intervals: [0.80, 0.95]
+  aggregation: "sum"  # sum, mean
+
+# Visualization
+visualization:
+  style: "seaborn-v0_8-whitegrid"
+  palette: "husl"
+  figsize: [14, 7]
+  dpi: 100
+  save_format: "png"

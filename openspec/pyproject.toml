@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "hotel-revenue-forecasting"
+version = "0.1.0"
+description = "Time series forecasting pipeline for hotel revenue prediction"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+
+dependencies = [
+    "pandas>=2.0,<2.3",
+    "numpy>=1.24,<2.0",
+    "scikit-learn>=1.3,<1.5",
+    "statsmodels>=0.14,<0.15",
+    "pmdarima>=2.0,<2.1",
+    "holidays>=0.40",
+    "prophet>=1.1,<1.2",
+    "cmdstanpy>=1.2,<1.3",
+    "lightgbm>=4.1,<4.4",
+    "xgboost>=2.0,<2.2",
+    "catboost>=1.2,<1.3",
+    "torch>=2.1,<2.5",
+    "matplotlib>=3.7,<3.10",
+    "pyparsing>=3.0.9",
+    "seaborn>=0.13,<0.14",
+    "plotly>=5.18,<5.25",
+    "jupyter>=1.0,<2.0",
+    "optuna>=3.4,<3.8",
+    "scipy>=1.11,<1.14",
+]
+
+[project.optional-dependencies]
+dl = [
+    # TimesFM requires Linux (JAX/lingvo); not installable on Windows
+    "timesfm>=1.2",
+]
+dev = [
+    "pytest>=7.4,<8.0",
+    "pytest-cov>=4.1,<5.0",
+    "ruff>=0.1,<0.5",
+]
+
+[tool.setuptools.packages.find]
+include = ["src/forecasting*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

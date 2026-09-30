@@ -1,0 +1,51 @@
+# Data
+data/
+*.csv
+*.parquet
+*.xlsx
+*.xls
+
+# Outputs
+outputs/
+*.png
+*.jpg
+*.svg
+*.html
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Lock files
+requirements-lock.txt
+poetry.lock
+
+# Model checkpoints
+*.pt
+*.pth
+*.ckpt
+models/
