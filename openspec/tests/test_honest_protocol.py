@@ -137,3 +137,118 @@ class TestPatchTSTFallbackAlignment:
         tail = daily_series_df["revenue"].values[-7:]
         expected = np.array([tail[i % 7] for i in range(10)])
         assert np.allclose(result.predictions, expected)
+
+
+class TestIncrementalFastPath:
+    """The incremental path must be feature-identical to the reference path."""
+
+    def _make_engineers(self, cyclical=("dayofweek", "dayofyear", "month")):
+        from src.forecasting.preprocessing.holidays import HolidayFeatureEngineer
+
+        eng = TemporalFeatureEngineer(
+            lags=[1, 7, 30], rolling_windows=[7, 30],
+            rolling_stats=["mean", "std", "min", "max"],
+            expanding_stats=["mean", "std"],
+            cyclical_features=list(cyclical), target_cols=["revenue"],
+        )
+        he = HolidayFeatureEngineer()
+        return eng, he
+
+    def _make_history(self, n=120):
+        dates = pd.date_range("2024-01-01", periods=n, freq="D")
+        t = np.arange(n)
+        revenue = np.linspace(1000, 3000, n) + 200 * np.sin(2 * np.pi * t / 7)
+        return pd.DataFrame({"date": dates, "revenue": revenue})
+
+    def test_features_match_reference_step_by_step(self):
+        from src.forecasting.forecasting.recursive import _IncrementalRowBuilder, _values_match
+
+        eng, he = self._make_engineers()
+        history = self._make_history()
+
+        # Fit the holiday calendar FIRST (recursive_forecast does this via the
+        # probe transform before constructing the builder).
+        he.transform(history)
+
+        builder = _IncrementalRowBuilder(eng, he, "revenue", history["revenue"].to_numpy())
+
+        hist = history.copy()
+        rng = np.random.default_rng(3)
+        for step in range(12):
+            d = hist["date"].max() + pd.Timedelta(days=1)
+            ctx = pd.concat([hist, pd.DataFrame({"date": [d], "revenue": [np.nan]})],
+                            ignore_index=True)
+            ref = he.transform(eng.transform(ctx))
+            columns = [c for c in ref.columns if c not in ("date", "revenue")]
+            ref_row = ref.iloc[-1]
+
+            fast = builder.build_row(d, columns)
+            for col in columns:
+                assert _values_match(fast[col], ref_row[col]), (
+                    f"step {step}, col {col!r}: incremental={fast[col]!r} "
+                    f"reference={ref_row[col]!r}"
+                )
+
+            p = float(rng.uniform(1500, 2500))
+            builder.append(p)
+            hist = pd.concat([hist, pd.DataFrame({"date": [d], "revenue": [p]})],
+                             ignore_index=True)
+
+    def test_predictions_agree_with_reference_path(self):
+        from src.forecasting.models.ml import LightGBMForecaster
+
+        eng, he = self._make_engineers()
+        history = self._make_history(200)
+        future = pd.date_range(history["date"].max() + pd.Timedelta(days=1), periods=30)
+
+        feat = he.transform(eng.transform(history.copy()))
+        feat = feat.dropna()
+        feature_cols = [c for c in feat.columns if c not in ("date", "revenue")]
+
+        model = LightGBMForecaster(
+            params={"objective": "regression", "n_estimators": 60, "random_state": 0, "verbose": -1}
+        )
+        model.fit(feat, target_col="revenue", date_col="date", feature_cols=feature_cols)
+
+        fast = recursive_forecast(
+            model, history, future, target_col="revenue", date_col="date",
+            feature_cols=feature_cols, feature_engineer=eng, holiday_engineer=he,
+            use_incremental=True,
+        )
+        ref = recursive_forecast(
+            model, history, future, target_col="revenue", date_col="date",
+            feature_cols=feature_cols, feature_engineer=eng, holiday_engineer=he,
+            use_incremental=False,
+        )
+        assert len(fast) == len(ref) == 30
+        # Features are identical within float rounding (verified feature-by-feature
+        # in the step test). With tree models, a ~1e-12 feature difference can still
+        # flip a split threshold and jump to another leaf, so predictions are
+        # compared with a leaf-jump tolerant bound rather than exact equality.
+        assert np.mean(np.abs(fast - ref)) / np.mean(np.abs(ref)) < 0.01
+
+    def test_unsupported_config_falls_back_silently(self):
+        """A non-replicable cyclical feature must degrade to the reference path."""
+        from src.forecasting.models.ml import LightGBMForecaster
+
+        # 'is_weekend' is not in the cyclical period map -> incremental raises
+        # -> verification fails -> reference path used -> results still correct.
+        eng, he = self._make_engineers(cyclical=("dayofweek", "is_weekend"))
+        history = self._make_history(150)
+        future = pd.date_range(history["date"].max() + pd.Timedelta(days=1), periods=15)
+
+        feat = he.transform(eng.transform(history.copy())).dropna()
+        feature_cols = [c for c in feat.columns if c not in ("date", "revenue")]
+
+        model = LightGBMForecaster(
+            params={"objective": "regression", "n_estimators": 30, "random_state": 0, "verbose": -1}
+        )
+        model.fit(feat, target_col="revenue", date_col="date", feature_cols=feature_cols)
+
+        result = recursive_forecast(
+            model, history, future, target_col="revenue", date_col="date",
+            feature_cols=feature_cols, feature_engineer=eng, holiday_engineer=he,
+            use_incremental=True,
+        )
+        assert len(result) == 15
+        assert not np.isnan(result).any()

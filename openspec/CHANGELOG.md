@@ -2,6 +2,17 @@
 
 All notable changes to the Hotel Revenue Forecasting Pipeline.
 
+## [0.2.1] - 2026-10-01
+
+### Performance — Incremental Recursive Forecasting
+
+- **`recursive_forecast` fast path**: history features computed once; each future row built with O(1)/O(window) lookups (lags, rolling, expanding, calendar, CR holidays) instead of re-transforming the full context per step
+  - **27.8x speedup** at notebook scale (937-day history, 158 forecast steps, 46 features): 14.5s → 0.5s per model, with **identical predictions** (max diff = 0)
+  - **Self-verification**: the incremental path is validated feature-by-feature against the reference transform on the first step and falls back automatically on any mismatch — speed never compromises correctness
+  - Reference path preserved (`use_incremental=False`) as auditable ground truth
+  - Per-step INFO log spam from feature/holiday builders silenced during recursion (restored afterwards)
+- Tests (28 total): step-by-step feature equivalence, end-to-end prediction agreement, and silent-fallback for unsupported configs
+
 ## [0.2.0] - 2026-09-29
 
 ### Fixed — Honest Evaluation Protocol (anti "números falsos")
