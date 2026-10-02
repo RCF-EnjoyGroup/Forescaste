@@ -48,3 +48,14 @@ This document records all assumptions made in the hotel revenue forecasting pipe
 - No real-time inference or automated retraining.
 - Deep learning models (TimesFM, PatchTST) may not converge with limited data.
 - Single-model forecast; ensemble methods may improve robustness.
+
+## Room-Nights Pipeline Assumptions
+
+1. **Primary target**: Room nights (`rooms_sold`) — management decision to forecast demand first; monetary forecasting (revenue ≈ room nights × ADR) builds on this foundation.
+2. **NULL target handling**: Rows from `enjoy_fac_hotel_financial` carry NULL `rooms_sold`; they are excluded from the daily aggregation BEFORE any imputation (imputing first would contaminate the target series with financial NULLs).
+3. **Forward-known rule**: A variable is an ML input only if its future value is known or forecastable. `revenue`/`room_revenue`/`adr`/`occupancy_rate` are realized outcomes (future unknown) and excluded; `available_rooms` is planned capacity and included with its last observed value carried forward.
+4. **Future capacity**: Future `available_rooms` = last observed value (no announced renovations/closures); the assumption is flagged in the forecast report.
+5. **Capacity ceiling**: Forecasts are capped at available capacity; implied occupancy above 100% before capping is reported as a sanity warning.
+6. **Point forecasts continuous**: Metrics are computed on continuous predictions; rounding to integers is presentation only.
+7. **Synthetic data**: `data/hotel_roomnights_sample.csv` is a fictional test file generated with exact physical identities (occupancy_rate = rooms_sold/available_rooms; room_revenue = rooms_sold × adr; revenue = room_revenue × (1 + ancillary share); revpar = room_revenue/available_rooms). Results on it validate the methodology, not business numbers.
+8. **Precision ceiling**: With the current two SQL tables, the achievable precision is bounded by the target's own structure + calendar/holidays + capacity. The forward-looking data that unlocks "excellent" precision (reservations/pickup curves, group blocks, planned rates, cancellation rates, segment mix) requires a PMS/reservations source and is documented as future work (see the room-nights change's design.md).

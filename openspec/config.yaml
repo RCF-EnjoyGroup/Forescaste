@@ -38,7 +38,8 @@ preprocessing:
     winsorize_limits: [0.01, 0.99]
     action: "flag"  # flag, cap, remove
   
-  # Feature engineering
+  # Feature engineering (shared defaults; the room-nights pipeline
+  # overrides target_cols via the roomnights section below)
   features:
     lags: [1, 7, 14, 30, 365]
     rolling_windows: [7, 14, 30, 90]
@@ -52,6 +53,25 @@ preprocessing:
     val_ratio: 0.15
     test_ratio: 0.15
     gap_days: 7
+
+# Room-nights forecasting (primary target per management decision)
+# The revenue pipeline keeps using the sections above unchanged.
+roomnights:
+  target_col: "rooms_sold"
+  available_rooms_col: "available_rooms"
+  csv_path: "data/hotel_roomnights_sample.csv"
+  # Feature engineering for the room-nights target:
+  # lags/rollings/expanding are built from rooms_sold only.
+  features:
+    target_cols: ["rooms_sold"]
+    lags: [1, 7, 14, 30, 365]
+    rolling_windows: [7, 14, 30, 90]
+    rolling_stats: ["mean", "std", "min", "max"]
+    expanding_stats: ["mean", "std"]
+    cyclical_features: ["dayofweek", "dayofyear", "month"]
+  # ML inputs exclude every revenue/room_revenue-derived feature (future unknown);
+  # available_rooms is forward-known (capacity is planned) and stays eligible.
+  excluded_feature_prefixes: ["revenue", "room_revenue"]
 
 # Modeling configuration
 models:

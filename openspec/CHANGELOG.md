@@ -2,6 +2,20 @@
 
 All notable changes to the Hotel Revenue Forecasting Pipeline.
 
+## [0.3.0] - 2026-10-02
+
+### Added — Room-Nights Forecasting (primary target per management decision)
+
+- **Target pivot**: room nights (`rooms_sold`) as the primary forecasting target; the revenue pipeline remains fully intact
+- **Synthetic test-data file** (`data/hotel_roomnights_sample.csv`): 5 hotels × 3 years, capacity-bounded integer room nights with weekly/annual seasonality, CR holiday uplift (incl. Monday bridges), one simulated renovation, 785 financial rows with NULL target (exercising NULL handling), and exact physical identities (occupancy/ADR/room_revenue/revenue/revpar) — deterministic by seed
+- **NULL-safe daily aggregation** (`data/aggregation.py`): financial-table rows with NULL `rooms_sold` are excluded BEFORE imputation; gap dates reindexed; data-quality report
+- **Forward-known rule in ML inputs**: monetary-family features excluded (future unknown); `available_rooms` carried through recursive forecasting with its last observed (planned) value
+- **Capacity ceiling**: future forecasts capped at available capacity with capped-dates reporting; implied occupancy (position-based) reported
+- **Schema validation by target**: `rooms_sold` required and validated when it is the active target
+- **Notebook** `hotel_roomnights_forecasting.ipynb` (documented, executed end-to-end) + HTML report
+- Tests: 43 total (15 new — NULL handling, generator determinism/identities/correlations, capacity ceiling, forward-known passthrough equivalence)
+- Results (synthetic data, honest multi-step protocol): **CatBoost wins** (MAE 14.3 room nights/day, WAPE 3.96%, 71.3% better than SeasonalNaive); DM-significant over Prophet/ETS/SARIMAX/PatchTST/naive
+
 ## [0.2.1] - 2026-10-01
 
 ### Performance — Incremental Recursive Forecasting

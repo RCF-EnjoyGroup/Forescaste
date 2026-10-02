@@ -84,11 +84,15 @@ class _IncrementalRowBuilder:
         holiday_engineer: Optional[HolidayFeatureEngineer],
         target_col: str,
         values: np.ndarray,
+        future_known: Optional[dict[str, float]] = None,
     ):
         self.eng = feature_engineer
         self.he = holiday_engineer
         self.target_col = target_col
         self.values: list[float] = [float(v) for v in values]
+        # Forward-known passthrough columns (e.g., available_rooms): their
+        # future value is the last observed value (planned capacity).
+        self.future_known: dict[str, float] = dict(future_known or {})
 
         if holiday_engineer is not None:
             self.pre_days = holiday_engineer.pre_days
@@ -137,6 +141,10 @@ class _IncrementalRowBuilder:
     # -- internals -----------------------------------------------------------
 
     def _compute(self, col: str, date: pd.Timestamp, cal: dict[str, int]) -> object:
+        # Forward-known passthrough columns (planned capacity etc.)
+        if col in self.future_known:
+            return self.future_known[col]
+
         if col in cal:
             return cal[col]
 
@@ -242,6 +250,7 @@ def recursive_forecast(
     feature_engineer: Optional[TemporalFeatureEngineer] = None,
     holiday_engineer: Optional[HolidayFeatureEngineer] = None,
     use_incremental: bool = True,
+    future_known_cols: Optional[list[str]] = None,
 ) -> np.ndarray:
     """Generate leakage-free multi-step predictions with a fitted GBM model.
 
@@ -265,6 +274,9 @@ def recursive_forecast(
     use_incremental : bool
         Use the verified fast path (default). Pass False to force the
         reference full-transform path (auditable, slower).
+    future_known_cols : list[str], optional
+        Columns whose future values are known/planned (e.g., available_rooms).
+        They are carried through the recursion with their last observed value.
 
     Returns
     -------
@@ -276,7 +288,10 @@ def recursive_forecast(
     if feature_engineer is None:
         raise ValueError("feature_engineer is required for recursive forecasting.")
 
-    history = history_df[[date_col, target_col]].copy()
+    future_known_cols = list(future_known_cols or [])
+    keep_cols = [c for c in [date_col, target_col] + future_known_cols if c]
+
+    history = history_df[keep_cols].copy()
     history[date_col] = pd.to_datetime(history[date_col])
     history = history.sort_values(date_col).dropna(subset=[target_col]).reset_index(drop=True)
 
@@ -290,6 +305,14 @@ def recursive_forecast(
             f"History must end before the first forecast date. "
             f"History ends at {history[date_col].max()}, first forecast date {first_date}."
         )
+
+    # Last observed value for each forward-known column (planned capacity)
+    fk: dict[str, float] = {}
+    for col in future_known_cols:
+        last = history[col].dropna()
+        if last.empty:
+            raise ValueError(f"Forward-known column '{col}' has no observed values.")
+        fk[col] = float(last.iloc[-1])
 
     # Outlier flag columns produced by the pipeline are unknown for future
     # rows; assume "not an outlier" (0), matching the flag semantics.
@@ -305,10 +328,10 @@ def recursive_forecast(
             # Build the reference probe first (this also fits the holiday
             # calendar if it was not fitted yet), then the incremental builder
             # sees the exact same state the reference path will use.
-            probe_ctx = pd.concat(
-                [history, pd.DataFrame({date_col: [first_date], target_col: [np.nan]})],
-                ignore_index=True,
+            placeholder = pd.DataFrame(
+                {date_col: [first_date], target_col: [np.nan], **{c: [fk[c]] for c in future_known_cols}}
             )
+            probe_ctx = pd.concat([history, placeholder], ignore_index=True)
             probe_full = feature_engineer.transform(probe_ctx)
             if holiday_engineer is not None:
                 probe_full = holiday_engineer.transform(probe_full)
@@ -318,6 +341,7 @@ def recursive_forecast(
             candidate = _IncrementalRowBuilder(
                 feature_engineer, holiday_engineer, target_col,
                 history[target_col].to_numpy(dtype=np.float64),
+                future_known=fk,
             )
             if candidate.verify(probe_row, first_date, builder_columns):
                 builder = candidate
@@ -355,7 +379,10 @@ def recursive_forecast(
         else:
             history_loop = history.copy()
             for i, d in enumerate(future_dates):
-                row = pd.DataFrame({date_col: [d], target_col: [np.nan]})
+                row = pd.DataFrame(
+                    {date_col: [d], target_col: [np.nan],
+                     **{c: [fk[c]] for c in future_known_cols}}
+                )
                 context = pd.concat([history_loop, row], ignore_index=True)
 
                 featured = feature_engineer.transform(context)
@@ -375,7 +402,10 @@ def recursive_forecast(
                 predictions.append(pred)
 
                 history_loop = pd.concat(
-                    [history_loop, pd.DataFrame({date_col: [d], target_col: [pred]})],
+                    [history_loop, pd.DataFrame(
+                        {date_col: [d], target_col: [pred],
+                         **{c: [fk[c]] for c in future_known_cols}}
+                    )],
                     ignore_index=True,
                 )
                 if (i + 1) % 50 == 0:

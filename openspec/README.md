@@ -1,12 +1,21 @@
-# Hotel Revenue Forecasting Pipeline
+# Hotel Revenue & Room-Nights Forecasting Pipeline
 
 **Enjoy Costa Rica — Revenue Analytics**
 
-Pipeline completo de pronóstico de series temporales para la predicción de ingresos hoteleros (`Revenue` y `Room Revenue`).
+Pipeline completo de pronóstico de series temporales para hoteles. El objetivo primario actual es **room nights** (`rooms_sold` — demanda), con el pipeline de ingresos monetarios (`revenue`/`room_revenue`) preservado y funcional.
 
 ## Overview
 
-Este proyecto implementa un framework modular de forecasting que compara modelos estadísticos, machine learning y deep learning para predecir ingresos hoteleros.
+Este proyecto implementa un framework modular de forecasting con **protocolo honesto**: evaluación multi-paso real (sin usar reales del test como entradas), baseline SeasonalNaive en toda comparación, test Diebold-Mariano con corrección Newey-West, y métricas en unidades reales.
+
+### Pipeline Room Nights (objetivo actual)
+
+- **Target**: `rooms_sold` (noches de habitación vendidas)
+- **Datos**: `data/hotel_roomnights_sample.csv` (ficticio, para desarrollo offline — identidades físicas exactas) o SQL real
+- **Agregación NULL-safe**: filas financieras (NULL target) excluidas ANTES de imputar
+- **Regla forward-known**: features monetarias excluidas; `available_rooms` (capacidad planeada) incluida
+- **Techo de capacidad**: pronósticos recortados a capacidad disponible + ocupación implícita
+- **Notebook**: `notebooks/hotel_roomnights_forecasting.ipynb` (+ reporte HTML)
 
 ### Modelos Implementados
 
