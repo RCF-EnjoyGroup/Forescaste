@@ -43,3 +43,14 @@
 - [x] 6.3 Add unit test for the capacity ceiling (forecasts capped, capping reported); verify the test passes
 - [x] 6.4 Run the complete test suite (existing + new); verify pytest exits 0 with all tests passing
 - [x] 6.5 Add unit test for the bias metrics (signed bias %, over/under day counts); verify the test passes
+
+## 7. Review Hardening (specialist audit): backtesting, tuning, intervals, per-hotel
+
+- [x] 7.1 Implement `evaluation/backtesting.py`: rolling-origin folds (strictly pre-origin history per fold) + per-fold metrics + mean-rank stability table; verify a unit test proves no fold ever receives post-origin data
+- [x] 7.2 Implement `evaluation/conformal.py`: per-horizon split-conformal uncertainty bands from pooled backtest residuals + empirical coverage; verify a unit test checks nominal vs empirical coverage
+- [x] 7.3 Implement `models/tuning.py`: Optuna tuning for GBMs whose objective is the recursive multi-step MAE on the validation window (not one-step shortcuts) + Prophet grid search; verify a smoke test returns valid best params
+- [x] 7.4 Notebook: tune Prophet and the 3 GBMs on the validation window before the main comparison; verify tuned params are used by every subsequent fit
+- [x] 7.5 Notebook: run the rolling-origin backtest (4 folds x 7 models + baseline) and report per-fold MAE, winner-per-fold and mean-rank stability; verify the ranking conclusion is based on backtest evidence, not the single test split
+- [x] 7.6 Notebook: conformal P10/P90 bands on the 90-day forecast (alpha=0.2) built from backtest residuals of the winner, with empirical coverage on the test window; verify the final report shows total, bands and coverage
+- [x] 7.7 Notebook: per-hotel evaluation of the winner (MAE/bias per hotel on the test window) and per-hotel 90-day forecasts with implied occupancy; verify the portfolio table sums per-hotel forecasts and flags the gap vs the direct portfolio forecast
+- [x] 7.8 Update ASSUMPTIONS/CHANGELOG with band interpretation and backtest evidence; verify CHANGELOG documents the hardening release

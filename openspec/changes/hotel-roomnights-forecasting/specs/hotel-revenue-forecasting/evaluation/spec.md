@@ -13,6 +13,24 @@ The system SHALL report the direction of forecast errors alongside their magnitu
 - **THEN** the system reports per-day-of-week error statistics (MAE, MAPE, signed bias)
 - **THEN** systematically worse segments (e.g., weekends vs midweek) are visible for staffing and pricing follow-up
 
+### Requirement: Rolling-Origin Backtesting for Rank Stability
+The system SHALL evaluate model ranking stability across multiple historical origins (backtesting), not only on a single hold-out split.
+
+#### Scenario: Multi-origin evaluation
+- **WHEN** models are compared
+- **THEN** the system runs a rolling-origin backtest with multiple folds, where each fold's forecast uses ONLY data observed strictly before the fold's window start
+- **THEN** the system reports per-fold MAE per model, the winner of each fold, and mean rank across folds
+- **THEN** the model-selection conclusion cites the backtest evidence, not only the single test split
+
+### Requirement: Calibrated Uncertainty Bands (Split Conformal per Horizon)
+The system SHALL accompany point forecasts with empirical uncertainty bands built from forecast residuals, with per-horizon-step widths.
+
+#### Scenario: Conformal bands on the future forecast
+- **WHEN** the final future forecast is generated
+- **THEN** the system builds per-horizon-step bands from the winning model's pooled backtest residuals at the requested confidence level
+- **THEN** the system reports the empirical coverage of the bands on held-out data alongside the nominal level
+- **THEN** the final report displays total forecast with its lower/upper bounds
+
 ### Requirement: Seasonal Naive Baseline in Every Comparison
 The system SHALL include a Seasonal Naive baseline (last observed seasonal cycle repeated) in every model comparison for the room-nights target.
 

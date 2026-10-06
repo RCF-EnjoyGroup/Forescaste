@@ -2,6 +2,17 @@
 
 All notable changes to the Hotel Revenue Forecasting Pipeline.
 
+## [0.3.2] - 2026-10-06
+
+### Added — Review hardening: backtesting, honest tuning, conformal bands, per-hotel
+
+- **Rolling-origin backtesting** (`evaluation/backtesting.py`): 6 historical windows × 90 days; each fold sees only strictly pre-origin data (no-leakage unit-tested); per-fold MAE, winner-per-fold, mean-rank stability. Evidence: LightGBM mean rank 1.8/8, 3/6 wins — ranking no longer rests on a single split
+- **Honest hyperparameter tuning** (`models/tuning.py`): Optuna (25 trials/family) whose objective is the **recursive multi-step MAE on the validation window** — never a one-step shortcut; Prophet grid search likewise. **Tuning flipped the winner from CatBoost to LightGBM** (MAE 15.2→14.3, bias −1.97%→−1.13%): the ranking was parameter-sensitive, proving the tuning investment necessary
+- **Conformal uncertainty bands** (`evaluation/conformal.py`): per-horizon-step P10/P90 built from the winner's pooled backtest residuals, physically clamped (≥0, ≤capacity). 90-day total: 26,435–29,450 room nights around 27,169. **Empirical coverage on test: 60% vs 80% nominal** — reported honestly; 6 windows give coarse quantiles (improvement path: more windows or moving-block bootstrap)
+- **Per-hotel evaluation & forecast** (notebook Section 8.5): winner re-fitted per hotel (frozen hyperparams); per-hotel test MAE avg 5.3 room nights; per-hotel 90-day forecasts with implied occupancy; portfolio-vs-sum-of-hotels gap **+0.9%** (documented, no hierarchical reconciliation)
+- Tests: 54 total (backtesting no-leakage spy, rank discrimination, conformal coverage/width-monotonicity, tuning smoke, bias)
+- Notebook re-executed end-to-end (57 cells, 0 errors) + HTML report
+
 ## [0.3.1] - 2026-10-02
 
 ### Added — Forecast direction & segment diagnostics (Lighthouse MAPE guidance)
