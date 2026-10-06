@@ -133,6 +133,16 @@ class Evaluator:
         # WAPE
         wape = abs_errors.sum() / max(np.abs(actuals).sum(), self.epsilon) * 100
 
+        # Forecast bias (signed): positive = over-forecasting (predicting more
+        # demand than materialized), negative = under-forecasting. MAPE/WAPE
+        # only carry magnitude; direction is the operational diagnostic
+        # (over-forecast -> overstaffing/discounting; under-forecast -> lost revenue).
+        signed_error_sum = errors.sum()  # actuals - predictions
+        bias_pct = -signed_error_sum / max(np.abs(actuals).sum(), self.epsilon) * 100
+        # bias_pct > 0: predictions above actuals (over-forecast), < 0: under-forecast
+        n_over = int((predictions > actuals).sum())
+        n_under = int((predictions < actuals).sum())
+
         metrics = {
             "MAE": round(mae, 4),
             "RMSE": round(rmse, 4),
@@ -140,11 +150,14 @@ class Evaluator:
             "sMAPE": round(smape, 4),
             "MASE": round(mase, 4),
             "WAPE": round(wape, 4),
+            "Bias%": round(bias_pct, 4),
+            "Over_days": n_over,
+            "Under_days": n_under,
         }
 
         logger.info(
-            "%s (%s): MAE=%.2f, RMSE=%.2f, MAPE=%.2f%%, WAPE=%.2f%%",
-            model_name, split, mae, rmse, mape, wape,
+            "%s (%s): MAE=%.2f, RMSE=%.2f, MAPE=%.2f%%, WAPE=%.2f%%, Bias=%+.2f%% (%d over / %d under)",
+            model_name, split, mae, rmse, mape, wape, bias_pct, n_over, n_under,
         )
 
         return MetricsResult(

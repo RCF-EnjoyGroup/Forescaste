@@ -25,6 +25,7 @@
 - [x] 4.2 Run Diebold-Mariano tests (best vs each competitor) with Newey-West HAC variance; verify p-values and significance flags are reported
 - [x] 4.3 Apply the capacity ceiling to future forecasts (cap at available capacity, portfolio = sum across hotels) and report capped dates/magnitudes; verify no forecasted value exceeds capacity
 - [x] 4.4 Report implied occupancy (forecast / available rooms) alongside the forecast and flag implausible values; verify occupancy appears in the summary and final report
+- [x] 4.6 Add forecast-bias and per-day-of-week diagnostics to the evaluation (signed bias %, over/under day counts, weekday/weekend error table per Lighthouse guidance); verify they appear in the comparison table and notebook report
 - [x] 4.5 Refit the best model on all observed history and generate the 90-day room-nights forecast; verify no NaNs and units are room nights (not dollars)
 
 ## 5. Notebook & Documentation
@@ -41,3 +42,4 @@
 - [x] 6.2 Add unit test for the synthetic generator (determinism by seed, capacity bounds, integer room nights); verify the test passes
 - [x] 6.3 Add unit test for the capacity ceiling (forecasts capped, capping reported); verify the test passes
 - [x] 6.4 Run the complete test suite (existing + new); verify pytest exits 0 with all tests passing
+- [x] 6.5 Add unit test for the bias metrics (signed bias %, over/under day counts); verify the test passes

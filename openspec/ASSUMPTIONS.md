@@ -40,6 +40,9 @@ This document records all assumptions made in the hotel revenue forecasting pipe
 2. **sMAPE range**: sMAPE values are bounded between 0% and 200%.
 3. **MASE baseline**: MASE uses a seasonal naive baseline (shift by 1 period) for scaling.
 4. **Bootstrap CIs**: Bootstrap confidence intervals assume exchangeability of forecast errors.
+5. **Industry MAPE benchmarks (Lighthouse, 2025)** — context, not targets: below 10% is generally excellent; 10–20% acceptable for most properties; typical ranges by property type: city-center corporate 8–12%, seasonal independent 15–25%, leisure/event resort 18–28%, small (<50 rooms) 15–30%. **Caveat**: these benchmarks usually measure short-horizon forecasts (days–weeks ahead); this pipeline evaluates multi-step windows (up to 158 days ahead honestly), a stricter regime — do not compare our multi-step MAPE against short-horizon benchmarks. The meaningful benchmark is the pipeline's own MAPE trend over time (tracked with each retraining).
+6. **Forecast bias**: magnitude metrics (MAE/MAPE/WAPE) do not carry direction. A signed bias % and over/under day counts are reported with every evaluation; |Bias%| > 5% warrants operational adjustment (systematic under-forecasting = lost revenue; systematic over-forecasting = overstaffing/discounting).
+7. **Segment diagnostics**: per-day-of-week error breakdown localizes systematic weakness (e.g., weekends vs midweek) for staffing and pricing follow-up.
 
 ## Limitations (Not Assumptions)
 

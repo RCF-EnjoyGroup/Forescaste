@@ -112,3 +112,31 @@ def test_bootstrap_confidence_intervals(evaluator):
     assert "lower" in result
     assert "upper" in result
     assert result["lower"] < result["mean"] < result["upper"]
+
+
+def test_bias_metrics(evaluator):
+    """Signed bias (direction) is reported alongside magnitude metrics."""
+    actuals = np.array([100.0, 100.0, 100.0, 100.0])
+    over = np.array([110.0, 120.0, 105.0, 115.0])   # all above -> over-forecast
+    under = np.array([90.0, 80.0, 95.0, 85.0])      # all below -> under-forecast
+
+    res_over = evaluator.compute_metrics(actuals, over, "Over")
+    res_under = evaluator.compute_metrics(actuals, under, "Under")
+
+    assert res_over.metrics["Bias%"] > 0
+    assert res_under.metrics["Bias%"] < 0
+    assert res_over.metrics["Over_days"] == 4
+    assert res_over.metrics["Under_days"] == 0
+    assert res_under.metrics["Under_days"] == 4
+    assert res_under.metrics["Over_days"] == 0
+
+    # Symmetric magnitude: same MAPE/WAPE for mirrored errors, opposite bias
+    np.testing.assert_allclose(res_over.metrics["MAPE"], res_under.metrics["MAPE"])
+    np.testing.assert_allclose(
+        res_over.metrics["Bias%"], -res_under.metrics["Bias%"], rtol=1e-9
+    )
+
+    # A perfectly calibrated forecast has zero bias
+    res_zero = evaluator.compute_metrics(actuals, actuals, "Perfect")
+    assert res_zero.metrics["Bias%"] == 0
+    assert res_zero.metrics["Over_days"] == 0

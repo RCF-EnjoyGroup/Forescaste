@@ -1,5 +1,18 @@
 ## ADDED Requirements
 
+### Requirement: Forecast Bias and Segment Diagnostics
+The system SHALL report the direction of forecast errors alongside their magnitude, and break errors down by day-of-week for operational diagnosis.
+
+#### Scenario: Signed bias reported with every evaluation
+- **WHEN** metrics are computed for a model
+- **THEN** the system reports a signed bias percentage (positive = over-forecasting, negative = under-forecasting) and the counts of over- and under-forecast days
+- **THEN** the bias is displayed in the comparison table and in the conclusions report
+
+#### Scenario: Per-day-of-week error breakdown for the best model
+- **WHEN** a best model is selected
+- **THEN** the system reports per-day-of-week error statistics (MAE, MAPE, signed bias)
+- **THEN** systematically worse segments (e.g., weekends vs midweek) are visible for staffing and pricing follow-up
+
 ### Requirement: Seasonal Naive Baseline in Every Comparison
 The system SHALL include a Seasonal Naive baseline (last observed seasonal cycle repeated) in every model comparison for the room-nights target.
 

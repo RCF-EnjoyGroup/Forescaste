@@ -2,6 +2,15 @@
 
 All notable changes to the Hotel Revenue Forecasting Pipeline.
 
+## [0.3.1] - 2026-10-02
+
+### Added — Forecast direction & segment diagnostics (Lighthouse MAPE guidance)
+
+- **Signed bias metrics** in every evaluation: `Bias%` (positive = over-forecasting, negative = under-forecasting) plus over/under day counts — magnitude metrics alone don't reveal systematic pessimism/optimism
+- **Per-day-of-week error breakdown** for the best model in the room-nights notebook (MAE, MAPE, signed bias per weekday) — operational signal for staffing/pricing (weekend vs midweek weakness localization)
+- **Industry MAPE benchmarks documented** (ASSUMPTIONS.md) with the honest caveat: published benchmarks measure short-horizon forecasts; this pipeline's multi-step protocol is a stricter regime — the meaningful benchmark is the pipeline's own trend over time
+- Tests: 44 total (bias metrics: sign symmetry, over/under counts, perfect-calibration zero)
+
 ## [0.3.0] - 2026-10-02
 
 ### Added — Room-Nights Forecasting (primary target per management decision)
