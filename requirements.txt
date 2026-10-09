@@ -1,0 +1,23 @@
+# Entorno de ejecución — Enterprise Room Nights Forecasting Engine
+# Verificado con Python 3.11 (tasks 1.2)
+
+# Núcleo (ingesta, features, evaluación, reporting)
+pandas>=2.0
+numpy>=1.26
+pyyaml>=6.0
+pydantic>=2.0
+
+# Estadístico / validación
+scikit-learn>=1.4
+statsmodels>=0.14
+
+# Modelos candidatos (spec forecasting: 7 candidatos)
+lightgbm>=4.0
+xgboost>=2.0
+catboost>=1.2
+
+# Explicabilidad (spec explainability)
+shap>=0.44
+
+# Tests
+pytest>=7.4

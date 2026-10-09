@@ -1,212 +1,28 @@
-# Hotel Revenue Forecasting Pipeline Configuration
-# =================================================
+schema: spec-driven
 
-# Global settings
-random_seed: 42
-log_level: INFO
+context: |
+  Language: es
+  All artifacts must be written in es.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
 
-# Data configuration
-data:
-  # SQL connection (optional - CSV fallback available)
-  sql:
-    host: ""
-    port: 5432
-    database: ""
-    # Credentials via environment variables: DB_USER, DB_PASSWORD
-  
-  # CSV fallback path
-  csv_path: "data/hotel_data.csv"
-  
-  # Required columns
-  required_columns:
-    - date
-    - hotel_id
-    - revenue
-    - room_revenue
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
 
-# Preprocessing configuration
-preprocessing:
-  # Missing value handling
-  missing_values:
-    strategy: "ffill_bfill"  # ffill_bfill, interpolation, dropna
-    max_gap: 7  # days
-  
-  # Outlier handling
-  outliers:
-    method: "iqr"  # iqr, zscore, winsorize
-    threshold: 1.5  # IQR multiplier or z-score threshold
-    winsorize_limits: [0.01, 0.99]
-    action: "flag"  # flag, cap, remove
-  
-  # Feature engineering (shared defaults; the room-nights pipeline
-  # overrides target_cols via the roomnights section below)
-  features:
-    lags: [1, 7, 14, 30, 365]
-    rolling_windows: [7, 14, 30, 90]
-    rolling_stats: ["mean", "std", "min", "max"]
-    expanding_stats: ["mean", "std"]
-    cyclical_features: ["dayofweek", "dayofyear", "month"]
-  
-  # Temporal split
-  split:
-    train_ratio: 0.70
-    val_ratio: 0.15
-    test_ratio: 0.15
-    gap_days: 7
-
-# Room-nights forecasting (primary target per management decision)
-# The revenue pipeline keeps using the sections above unchanged.
-roomnights:
-  target_col: "rooms_sold"
-  available_rooms_col: "available_rooms"
-  csv_path: "data/hotel_roomnights_sample.csv"
-  # Feature engineering for the room-nights target:
-  # lags/rollings/expanding are built from rooms_sold only.
-  features:
-    target_cols: ["rooms_sold"]
-    lags: [1, 7, 14, 30, 365]
-    rolling_windows: [7, 14, 30, 90]
-    rolling_stats: ["mean", "std", "min", "max"]
-    expanding_stats: ["mean", "std"]
-    cyclical_features: ["dayofweek", "dayofyear", "month"]
-  # ML inputs exclude every revenue/room_revenue-derived feature (future unknown);
-  # available_rooms is forward-known (capacity is planned) and stays eligible.
-  excluded_feature_prefixes: ["revenue", "room_revenue"]
-
-# Real production sources (confirmed schemas, 2026-10-06):
-#   staging.enjoy_fac_hotel  -> booking snapshots (snap_flag 0=real, 1=future books)
-#   public.enjoy_inventory   -> official capacity by property/date/room-type
-# The pipeline consumes exported aggregate CSVs (SQL pushdown); see the queries
-# in src/forecasting/data/real_sources.py for systems to run.
-roomnights_real:
-  sources:
-    snapshots_table: "staging.enjoy_fac_hotel"
-    inventory_table: "public.enjoy_inventory"
-  # variant -> canonical key (codes and names observed in the real tables)
-  property_map:
-    "Hotel Royal Corin": "corin"
-    "CORIN": "corin"
-    "LAPAS": "lapas"
-    "MARINA": "marina"
-    "VILLAS": "villas"
-    "SJOSL": "sjo"
-    "LIRAK": "lirak"
-    "LIREL": "lirel"
-    "FIESTA": "fiesta"
-  display_names:
-    corin: "Hotel Royal Corin"
-    lapas: "Lapas"
-    marina: "Marina"
-    villas: "Villas"
-    sjo: "SJO (SJOSL)"
-    lirak: "LIRAK"
-    lirel: "LIREL"
-    fiesta: "Fiesta"
-  lead_buckets: [7, 14, 30, 60, 90, 180, 365]
-  multi_step_min_lead: 365       # only buckets >= this are forward-known for the FULL horizon
-  horizon_days: 365              # deliverable: 12-month detailed forecast
-  training_window_years: 4       # recent-window policy (old regimes excluded)
-  demand_exclude_ratecodes: ["SYSTEM_ADJUST"]
-  capacity_fallback: "last_known"
-  cold_start_min_history_days: 90
-  # Frozen properties (closed/paused, confirmed by operations 2026-10): shown in
-  # the quality report but excluded from ALL modeling/forecast frames.
-  frozen_properties: [lapas, lirak]
-  csv_paths:
-    demand: "data/roomnights_real/demand_daily.csv"
-    pickup: "data/roomnights_real/pickup_by_lead.csv"
-    capacity: "data/roomnights_real/capacity_daily.csv"
-
-# Modeling configuration
-models:
-  # Statistical models
-  statistical:
-    prophet:
-      changepoint_prior_scale: 0.05
-      seasonality_prior_scale: 10.0
-      holidays_prior_scale: 10.0
-      yearly_seasonality: true
-      weekly_seasonality: true
-      daily_seasonality: false
-    
-    sarimax:
-      seasonal_periods: [7]  # m=365 makes auto_arima intractably slow; yearly handled by other models
-      stepwise: true
-      max_p: 3
-      max_q: 3
-      max_P: 2
-      max_Q: 2
-    
-    ets:
-      seasonal_periods: 7
-      damped_trend: true
-      auto_select: true
-  
-  # ML models
-  ml:
-    lightgbm:
-      objective: "regression"
-      metric: "mae"
-      early_stopping_rounds: 50
-      categorical_features: ["hotel_id"]
-    
-    xgboost:
-      objective: "reg:squarederror"
-      eval_metric: "mae"
-      early_stopping_rounds: 50
-    
-    catboost:
-      loss_function: "MAE"
-      cat_features: ["hotel_id"]
-      early_stopping_rounds: 50
-  
-  # DL models
-  dl:
-    timesfm:
-      checkpoint: "timesfm-1.0-200m"
-      context_len: 512
-      horizon: 30
-    
-    patchtst:
-      patch_len: 16
-      stride: 8
-      d_model: 128
-      n_heads: 8
-      n_layers: 3
-      dropout: 0.1
-      lr: 0.001
-      epochs: 100
-      batch_size: 32
-      patience: 10
-
-# Evaluation configuration
-evaluation:
-  metrics:
-    - MAE
-    - RMSE
-    - MAPE
-    - sMAPE
-    - MASE
-    - WAPE
-  
-  cross_validation:
-    n_splits: 5
-    expanding: true
-  
-  significance_test:
-    test: "diebold_mariano"
-    alpha: 0.05
-
-# Forecasting configuration
-forecasting:
-  horizon_days: 90
-  confidence_intervals: [0.80, 0.95]
-  aggregation: "sum"  # sum, mean
-
-# Visualization
-visualization:
-  style: "seaborn-v0_8-whitegrid"
-  palette: "husl"
-  figsize: [14, 7]
-  dpi: 100
-  save_format: "png"
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

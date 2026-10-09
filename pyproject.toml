@@ -1,0 +1,10 @@
+[project]
+name = "roomnights-forecasting-engine"
+version = "0.1.0"
+description = "Enterprise Room Nights Forecasting Engine — Enjoy Group Revenue Management"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

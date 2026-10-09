@@ -1,0 +1,37 @@
+# Enterprise Room Nights Forecasting Engine — configuración central
+# ================================================================
+# Toda corrida lee esta configuración; cambiar valores NO requiere tocar código.
+# Variables de entorno opcionales que sobreescriben estos valores:
+#   FORECAST_HORIZON, RETRAIN_FREQUENCY, MIN_HISTORY, RANDOM_SEED
+
+random_seed: 42
+log_level: INFO
+
+# Horizonte de forecast (días). Soportado: 30, 60, 90 (ver spec forecasting:
+# "Horizonte configurable"; otros valores positivos también se aceptan).
+forecast:
+  horizon_days: 90
+  # Percentiles de la banda de incertidumbre (P10/P50/P90)
+  percentiles: [10, 50, 90]
+
+# Política de re-entrenamiento (ver spec monitoring)
+retraining:
+  frequency: monthly          # daily | weekly | monthly | quarterly | never
+  min_history_days: 365       # mínimo de días de histórico para re-entrenar
+
+# Fuentes de datos (las tres fuentes reales exclusivas del motor)
+data:
+  sources:
+    capacity: data/capacity_daily.csv
+    demand: data/demand_daily.csv
+    pickup: data/pickup_by_lead.csv
+  # Nombres de columna candidatos por rol; la detección automática puede
+  # identificar el esquema sin que coincidan exactamente (spec data-ingestion).
+  column_hints:
+    property: [property, property_id, hotel, hotel_id, hotel_code, propiedad, variant]
+    date: [date, stay_date, business_date, fecha, day]
+    capacity: [capacity, available_rooms, inventory, rooms_available, oficial_inventory]
+    demand: [room_nights, rooms_sold, rn, demand, actual_rn, actual]
+    pickup: [pickup, pickup_rn, booked_rn, current_rn, on_books]
+    snapshot: [snapshot_date, snap_date, forecast_date, as_of]
+    lead: [lead_days, lead, anticipation_days, dias_anticipacion]
