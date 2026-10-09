@@ -49,3 +49,5 @@ poetry.lock
 *.pth
 *.ckpt
 models/
+
+notebooks/catboost_info/

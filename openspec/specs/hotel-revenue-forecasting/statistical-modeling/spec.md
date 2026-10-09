@@ -7,13 +7,13 @@ Implement and evaluate classical statistical time series models for hotel revenu
 ## Requirements
 
 ### Requirement: Prophet Model Implementation
-The system SHALL implement Facebook Prophet for revenue forecasting with hotel-specific configurations.
+The system SHALL implement Facebook Prophet for room-nights forecasting with hotel-specific configurations.
 
 #### Scenario: Prophet model training
 - **WHEN** Prophet model is trained on training data
 - **THEN** the system configures yearly, weekly, and daily seasonality appropriately for hotel data
 - **THEN** the system adds country-specific holidays (Costa Rica) as regressors
-- **THEN** the system uses appropriate changepoint prior scale for revenue trends
+- **THEN** the system uses appropriate changepoint prior scale for room-nights trends
 
 #### Scenario: Prophet hyperparameter tuning
 - **WHEN** hyperparameter tuning is enabled
@@ -27,7 +27,7 @@ The system SHALL implement Facebook Prophet for revenue forecasting with hotel-s
 - **THEN** the system returns predictions aligned with test timestamps
 
 ### Requirement: SARIMA/SARIMAX Model Implementation
-The system SHALL implement SARIMA and SARIMAX models for revenue forecasting.
+The system SHALL implement SARIMA and SARIMAX models for room-nights forecasting.
 
 #### Scenario: SARIMA model selection
 - **WHEN** SARIMA model is configured
@@ -43,10 +43,10 @@ The system SHALL implement SARIMA and SARIMAX models for revenue forecasting.
 #### Scenario: SARIMA prediction
 - **WHEN** trained SARIMA/SARIMAX predicts on validation/test data
 - **THEN** the system generates point forecasts and prediction intervals
-- **THEN** the system handles multi-step forecasting recursively
+- **THEN** the system handles multi-step forecasting recursively with date-aligned predictions
 
 ### Requirement: Exponential Smoothing (Holt-Winters) Implementation
-The system SHALL implement Exponential Smoothing models (Holt-Winters) for revenue forecasting.
+The system SHALL implement Exponential Smoothing models (Holt-Winters) for room-nights forecasting.
 
 #### Scenario: ETS model configuration
 - **WHEN** Exponential Smoothing is configured
@@ -56,7 +56,7 @@ The system SHALL implement Exponential Smoothing models (Holt-Winters) for reven
 
 #### Scenario: Holt-Winters prediction
 - **WHEN** trained ETS model predicts on validation/test data
-- **THEN** the system generates point forecasts and prediction intervals
+- **THEN** the system generates point forecasts and prediction intervals with date alignment
 - **THEN** the system supports both additive and multiplicative seasonality
 
 ### Requirement: Statistical Model Evaluation

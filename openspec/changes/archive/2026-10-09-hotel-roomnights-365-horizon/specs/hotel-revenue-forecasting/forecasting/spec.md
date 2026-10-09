@@ -1,10 +1,4 @@
-# Forecasting Specification
-
-## Purpose
-
-Generate future revenue forecasts using the best selected model and provide actionable insights for revenue management.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Future Forecast Generation
 The system SHALL generate room-nights forecasts for a **365-day (12-month) horizon with daily detail** per property and for the portfolio, combining realized history with the current booking books, reported in room-night units and respecting inventory capacity.
@@ -46,38 +40,3 @@ The system SHALL generate room-nights forecasts for a **365-day (12-month) horiz
 - **WHEN** best model requires exogenous variables (SARIMAX, Prophet with regressors)
 - **THEN** the system generates or obtains future values for exogenous variables
 - **THEN** the system documents assumptions for exogenous variable projections
-
-### Requirement: Forecast Visualization and Reporting
-The system SHALL create publication-ready per-property room-nights forecast visualizations and summary reports, with capacity, occupancy and booking-book context.
-
-#### Scenario: Forecast plot generation
-- **WHEN** forecast is generated
-- **THEN** the system plots historical realized demand + forecast with uncertainty bands in room-night units, alongside the capacity line
-- **THEN** the system provides separate plots per property and an aggregated view
-
-#### Scenario: Forecast summary report
-- **WHEN** forecast is generated
-- **THEN** the system produces a summary with total forecasted room nights per property, implied occupancy, current books coverage (share of the forecast already on the books), and uncertainty flags
-- **THEN** cold-start properties and any capacity fallbacks are called out explicitly
-
-### Requirement: Model Retraining and Updating
-The system SHALL support model retraining as new data becomes available.
-
-#### Scenario: Incremental model update
-- **WHEN** new data is available
-- **THEN** the system supports retraining best model with expanded dataset
-- **THEN** the system validates retrained model performance hasn't degraded
-- **THEN** the system versions models and tracks performance over time
-
-### Requirement: Assumptions and Limitations Documentation
-The system SHALL document all forecasting assumptions and limitations.
-
-#### Scenario: Assumptions documentation
-- **WHEN** forecast is generated
-- **THEN** the system documents: data granularity, forecast horizon, model assumptions, data quality caveats
-- **THEN** the system documents: seasonality assumptions, trend assumptions, external factor assumptions
-- **THEN** the system documents: limitations (no external data, no weather, no competitor data, etc.)
-
-#### Scenario: Improvement recommendations
-- **WHEN** forecast is generated
-- **THEN** the system recommends potential improvements: external data sources, higher frequency data, hierarchical forecasting, scenario analysis

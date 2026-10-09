@@ -47,6 +47,17 @@ This document records all assumptions made in the hotel revenue forecasting pipe
 9. **Backtesting evidence**: model ranking is reported with rolling-origin stability (mean rank across 6 windows) in addition to the single test split; a winner that does not hold its rank across windows would be flagged as unstable regardless of its test metrics.
 10. **Tuning objective**: hyperparameters are selected by the recursive multi-step MAE on the validation window — the same regime the business will experience — not by one-step shortcuts; tuned hyperparameters are frozen before backtesting so stability is measured, not re-selected.
 
+## Real-Data Assumptions (production sources)
+
+1. **Snapshot semantics**: `snap_flag=0` rows are realized demand (one record per property per stay date, asserted at load); `snap_flag=1` rows are booking books by (stay_date, lead). The realized series never mixes future books.
+2. **As-of rule for books**: `rotb_dN` uses only snapshots dated at or before (stay_date − N). For a 90-day multi-step window only leads ≥ 90 are forward-known; shorter leads are reserved for a rolling-refresh cadence and excluded from multi-step inputs.
+3. **Training window**: last 4 years per property by default; older regimes (2008-era legacy data for Corin) are excluded to avoid regime noise — revisit if backtesting shows older data helps.
+4. **Capacity fallback**: inventory dates with NULL `oficial_inventory` inherit the property's last known capacity, counted and reported; properties with low inventory coverage have their occupancy flagged unreliable.
+5. **Cold start (SJOSL)**: properties with < 90 realized days are forecast from current books scaled by the median learned pickup-completion factor (realized ÷ books at d90 across warm properties) and flagged; no per-property backtest claims are made for them.
+6. **Booking completion**: the learned completion factor (e.g., ~2.5× books-at-d90) is a portfolio median, not a guarantee — it varies by property and season and must be re-learned at each retraining.
+7. **Portfolio vs sum-of-hotels**: the per-property forecast sum can diverge from the direct portfolio forecast (observed +3.2%); both are reported without hierarchical reconciliation (documented non-goal).
+8. **Synthetic real-schema parity**: the current run uses the synthetic generator v2 that mirrors the real schemas (snapshot semantics, raw identifiers, capacity table); with the systems CSV exports the same notebook runs unchanged — but numbers on synthetic data validate methodology, not business value.
+
 ## Limitations (Not Assumptions)
 
 - No external data (weather, events, competitor pricing).

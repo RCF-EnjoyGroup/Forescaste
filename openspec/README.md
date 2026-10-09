@@ -1,126 +1,105 @@
-# Hotel Revenue & Room-Nights Forecasting Pipeline
+# Hotel Room-Nights Forecasting Pipeline
 
 **Enjoy Costa Rica — Revenue Analytics**
 
-Pipeline completo de pronóstico de series temporales para hoteles. El objetivo primario actual es **room nights** (`rooms_sold` — demanda), con el pipeline de ingresos monetarios (`revenue`/`room_revenue`) preservado y funcional.
+Pronóstico de **room nights** (noches vendidas, `rooms_sold`) con **protocolo
+honesto** sobre las fuentes reales de producción: snapshots de reservas
+(`staging.enjoy_fac_hotel`) + inventario oficial (`public.enjoy_inventory`).
 
-## Overview
+> **Protocolo honesto**: evaluación multi-paso real (recursiva — los reales del
+> test jamás son entradas), baseline SeasonalNaive obligatorio, backtesting
+> rolling-origin, test Diebold-Mariano con Newey-West, techo de capacidad,
+> bandas conformales con cobertura reportada, sesgo/dirección del error,
+> cold-start declarado. Datos sintéticos siempre con disclaimer.
 
-Este proyecto implementa un framework modular de forecasting con **protocolo honesto**: evaluación multi-paso real (sin usar reales del test como entradas), baseline SeasonalNaive en toda comparación, test Diebold-Mariano con corrección Newey-West, y métricas en unidades reales.
+## Pipelines
 
-### Pipeline Room Nights (objetivo actual)
+| Pipeline | Target | Datos | Notebook |
+|---|---|---|---|
+| **PRODUCCIÓN (semanal, ~3 min)** | `rooms_sold` por propiedad + portafolio — **horizonte 365d (12 meses, detalle diario)** | 3 agregados SQL — ver [README_SISTEMAS.md](README_SISTEMAS.md) | `hotel_roomnights_production.ipynb` |
+| **Re-validación (trimestral/anual, ~50 min)** | bake-off de 9 modelos + DM + backtest + selección por propiedad (folds 90d) | mismos agregados | `hotel_roomnights_realdata.ipynb` |
+| Room nights v1 (archivado) | `rooms_sold` portafolio | `hotel_roomnights_sample.csv` (sintético) | `hotel_roomnights_forecasting.ipynb` |
+| Revenue (archivado) | `revenue` / `room_revenue` | `hotel_data.csv` | `hotel_revenue_forecasting.ipynb` |
 
-- **Target**: `rooms_sold` (noches de habitación vendidas)
-- **Datos**: `data/hotel_roomnights_sample.csv` (ficticio, para desarrollo offline — identidades físicas exactas) o SQL real
-- **Agregación NULL-safe**: filas financieras (NULL target) excluidas ANTES de imputar
-- **Regla forward-known**: features monetarias excluidas; `available_rooms` (capacidad planeada) incluida
-- **Techo de capacidad**: pronósticos recortados a capacidad disponible + ocupación implícita
-- **Notebook**: `notebooks/hotel_roomnights_forecasting.ipynb` (+ reporte HTML)
+**Arquitectura campeón/challenger (v0.8)**: producción corre un campeón fijo
+(`Prophet(0.01,10)` por propiedad, guard SeasonalNaive <120d, congeladas excluidas)
+con pisos honestos en cada corrida (SeasonalNaive y SN365) y gatillos de
+re-validación (edge <5% vs SN365, cadencia trimestral, eventos de composición).
 
-### Modelos Implementados
-
-| Familia | Modelo | Descripción |
-|---------|--------|-------------|
-| **Estadístico** | Prophet | Facebook Prophet con festivos de Costa Rica |
-| **Estadístico** | SARIMAX | Auto ARIMA con exógenas |
-| **Estadístico** | ETS | Holt-Winters con selección automática |
-| **ML** | LightGBM | Gradient boosting con early stopping |
-| **ML** | XGBoost | Gradient boosting regularizado |
-| **ML** | CatBoost | Gradient boosting con categóricas nativas |
-| **DL** | TimesFM | Foundation model de Google (zero-shot) |
-| **DL** | PatchTST | Transformer con patching |
-
-### Métricas de Evaluación
-
-MAE, RMSE, MAPE, sMAPE, MASE, WAPE + test de Diebold-Mariano para significancia estadística.
-
-## Project Structure
+## La arquitectura real (v0.4)
 
 ```
-hotel-revenue-forecasting/
-├── config.yaml                    # Configuración centralizada
-├── pyproject.toml                 # Dependencias y build config
-├── requirements.txt               # pip-compatible dependencies
-├── notebooks/
-│   └── hotel_revenue_forecasting.ipynb  # Notebook principal
-├── src/forecasting/
-│   ├── data/                      # Data loading & validation
-│   ├── eda/                       # Exploratory data analysis
-│   ├── preprocessing/             # Feature engineering & splits
-│   ├── models/
-│   │   ├── statistical/           # Prophet, SARIMAX, ETS
-│   │   ├── ml/                    # LightGBM, XGBoost, CatBoost
-│   │   └── dl/                    # TimesFM, PatchTST
-│   ├── evaluation/                # Metrics & comparison
-│   └── forecasting/               # Future forecast generation
-├── tests/                         # Unit tests
-├── README.md
-├── ASSUMPTIONS.md
-└── CHANGELOG.md
+┌──────────────── staging.enjoy_fac_hotel (~14M filas, NUNCA salen de la base) ┐
+│  snap_flag = 0 (realizado)  →  TARGET: room nights por (property, stay_date) │
+│  snap_flag = 1 (futuro)     →  PICKUP: libros por anticipación (lead_days)  │
+├──────────────── public.enjoy_inventory ──────────────────────────────────────┤
+│  oficial_inventory          →  TECHO: capacidad + ocupación implícita       │
+└──────────────────────────────────────────────────────────────────────────────┘
+        │ 3 queries de agregación (SQL pushdown) → 3 CSVs   [README_SISTEMAS.md]
+        ▼
+  Pipeline (73 tests): mapeo canónico de propiedades · features as-of seguras
+  (rotb_d90/180/365, correlación 0.93 con lo realizado) · recursión incremental
+  verificada · tuning honesto (objetivo multi-paso) · backtesting 6 ventanas ·
+  bandas conformales · per-propiedad + cold-start (SJOSL)
+        ▼
+  Pronóstico 90 días: portafolio + por propiedad, con libros actuales como
+  covariantes, techo de capacidad, ocupación y cobertura de libros (% ya vendido)
 ```
+
+## Resultados del último run (agregados reales-schema sintéticos)
+
+- Ganador: **XGBoost** — MAE 33.7 noches/día, WAPE 3.8% (~96% de precisión)
+- Backtesting (6 ventanas × 90d): rango medio 1.8/8 — estable en top-2
+- Pronóstico 90d: 70,883 noches · ocupación 54.3% · banda 80%: 69,099–75,040
+- **43.3% del pronóstico ya está en los libros** (señal forward-looking #1)
+- Sesgo −2.24% (sub-pronostica levemente; umbral operativo ±5%)
+
+> ⚠️ Los runs sobre datos sintéticos validan la **metodología**. Con las
+> exportaciones reales de sistemas, el mismo notebook corre sin cambios.
 
 ## Setup
 
-### 1. Create virtual environment
-
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# .venv\Scripts\activate   # Windows
+python -m venv .venv && .venv\Scripts\activate   # Windows
+uv pip install -r requirements.txt              # o pip install -e ".[dev]"
 ```
 
-### 2. Install dependencies
+Requisito Windows: `cmdstanpy>=1.2,<1.3` (Prophet). TimesFM excluido en
+Windows (requiere JAX/Linux) — se reporta su ausencia, nunca su fallback.
 
-```bash
-pip install -r requirements.txt
+## Ejecución
 
-# For development
-pip install -e ".[dev]"
+1. Sistemas exporta los 3 agregados → `data/roomnights_real/` (instrucciones
+   exactas en [README_SISTEMAS.md](README_SISTEMAS.md))
+2. Analítica ejecuta el notebook con el kernel `Hotel Forecast (venv)`
+3. Reporte ejecutable: `notebooks/hotel_roomnights_realdata_report.html`
 
-# For deep learning models (optional)
-pip install -e ".[dl]"
+## Estructura
+
+```
+src/forecasting/
+├── data/            # real_sources (3 queries + loaders), property_map, pickup
+│                    # (as-of), aggregation (NULL-safe), synthetic_real (v2)
+├── eda/             # EDA orientado a decisiones
+├── preprocessing/   # features anti-fuga (shift), splits temporales con gap
+├── models/          # Prophet/SARIMAX/ETS · LightGBM/XGBoost/CatBoost · PatchTST
+│                    # + tuning.py (objetivo recursivo multi-paso)
+├── evaluation/      # métricas + bias · backtesting · conformal · DM Newey-West
+└── forecasting/     # recursive (incremental verificado, covariantes por fecha)
+tests/               # 73 tests (incl. no-leakage, as-of, determinismo, cold-start)
+notebooks/          # 3 pipelines + reportes HTML
+README_SISTEMAS.md  # ← contrato de datos con el equipo de sistemas
+ASSUMPTIONS.md      # supuestos y limitaciones (leer antes de usar cifras)
+CHANGELOG.md        # v0.1 → v0.4
 ```
 
-### 3. Configure
+## Métricas reportadas
 
-Edit `config.yaml` to set:
-- SQL connection (or use CSV fallback)
-- Model hyperparameters
-- Split ratios
-- Forecast horizon
+MAE, RMSE, MAPE, sMAPE, WAPE (≡ WMAPE), MASE (vs SeasonalNaive), Bias% y días
+sobre/sub-estimados, cobertura empírica de bandas, rango medio en backtesting.
+Con benchmarks de la industria (Lighthouse 2025) y su advertencia: miden
+horizontes cortos — nuestro protocolo multi-paso es más estricto.
 
-### 4. Run
-
-```bash
-# Open the notebook
-jupyter notebook notebooks/hotel_revenue_forecasting.ipynb
-```
-
-## Data Format
-
-The pipeline expects data from a SQL query combining two tables:
-
-```sql
-(SELECT * FROM test_enjoy_fac_hotel)
-UNION ALL
-(SELECT * FROM enjoy_fac_hotel_financial)
-```
-
-**Required columns:**
-- `date` — Transaction date
-- `hotel_id` — Hotel identifier
-- `revenue` — Total revenue
-- `room_revenue` — Room-specific revenue
-
-**Optional columns:** `rooms_sold`, `available_rooms`, `occupancy_rate`, `adr`, `revpar`
-
-## Key Design Decisions
-
-1. **Temporal splits only** — No random splits; 70/15/15 train/val/test with 7-day gap
-2. **No data leakage** — All lag/rolling features shifted by 1; scaler fitted on train only
-3. **Modular package** — Reusable components in `src/forecasting/`
-4. **Notebook-first** — Deliverable is the Jupyter notebook; code in package for testing
-
-## License
+## Licencia
 
 MIT

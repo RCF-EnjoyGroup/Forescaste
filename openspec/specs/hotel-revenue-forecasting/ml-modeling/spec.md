@@ -7,14 +7,19 @@ Implement and evaluate machine learning models (LightGBM, XGBoost, CatBoost) wit
 ## Requirements
 
 ### Requirement: LightGBM Model Implementation
-The system SHALL implement LightGBM for revenue forecasting with time series appropriate configuration.
+The system SHALL implement LightGBM for room-nights forecasting with time series appropriate configuration.
 
 #### Scenario: LightGBM training with temporal features
 - **WHEN** LightGBM model is trained
-- **THEN** the system uses engineered temporal features (lags, rolling stats, calendar features)
+- **THEN** the system uses engineered temporal features (lags, rolling stats, calendar features) built from rooms_sold
 - **THEN** the system configures objective=regression, metric=mae (or rmse)
 - **THEN** the system uses early stopping on validation set
 - **THEN** the system handles categorical features (hotel_id) natively
+
+#### Scenario: Feature set excludes future-unknown columns
+- **WHEN** the ML feature matrix is assembled for training or recursive prediction
+- **THEN** the system excludes all monetary-derived features (revenue, room_revenue families) because their future values are unknown
+- **THEN** the training feature set and the recursive-prediction feature set contain exactly the same columns
 
 #### Scenario: LightGBM hyperparameter optimization
 - **WHEN** hyperparameter tuning is enabled
@@ -28,11 +33,11 @@ The system SHALL implement LightGBM for revenue forecasting with time series app
 - **THEN** the system optionally provides prediction intervals via quantile regression or conformal prediction
 
 ### Requirement: XGBoost Model Implementation
-The system SHALL implement XGBoost for revenue forecasting with time series appropriate configuration.
+The system SHALL implement XGBoost for room-nights forecasting with time series appropriate configuration.
 
 #### Scenario: XGBoost training with temporal features
 - **WHEN** XGBoost model is trained
-- **THEN** the system uses engineered temporal features
+- **THEN** the system uses engineered temporal features built from rooms_sold
 - **THEN** the system configures objective=reg:squarederror, eval_metric=mae (or rmse)
 - **THEN** the system uses early stopping on validation set
 - **THEN** the system handles categorical features via one-hot or target encoding
@@ -47,11 +52,11 @@ The system SHALL implement XGBoost for revenue forecasting with time series appr
 - **THEN** the system generates point forecasts
 
 ### Requirement: CatBoost Model Implementation
-The system SHALL implement CatBoost for revenue forecasting with native categorical feature support.
+The system SHALL implement CatBoost for room-nights forecasting with native categorical feature support.
 
 #### Scenario: CatBoost training with temporal features
 - **WHEN** CatBoost model is trained
-- **THEN** the system uses engineered temporal features
+- **THEN** the system uses engineered temporal features built from rooms_sold
 - **THEN** the system leverages native categorical feature handling for hotel_id
 - **THEN** the system configures loss_function=MAE (or RMSE)
 - **THEN** the system uses early stopping on validation set

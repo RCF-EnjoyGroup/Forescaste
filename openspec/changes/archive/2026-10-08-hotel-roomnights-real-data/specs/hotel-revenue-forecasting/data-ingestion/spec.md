@@ -1,10 +1,4 @@
-# Data Ingestion Specification
-
-## Purpose
-
-Load and validate hotel financial data from SQL sources (test_enjoy_fac_hotel UNION enjoy_fac_hotel_financial) into a structured format suitable for time series forecasting.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Data Loading from SQL Sources
 The system SHALL load hotel data from the real production sources: `staging.enjoy_fac_hotel` (booking snapshots) and `public.enjoy_inventory` (official capacity), treating realized room nights (`snap_flag = 0`, column `rooms`, by `stay_date`) as the primary forecast target.
@@ -43,44 +37,7 @@ The system SHALL load hotel data from the real production sources: `staging.enjo
 - **THEN** the system parses it defensively (comma-to-dot conversion, invalid values to NULL with a report)
 - **THEN** parsed revenue is used for contextual/ADR analysis only, never as an ML input (future unknown)
 
-### Requirement: Data Schema Documentation
-The system SHALL document the expected schema of the input data including column names, types, and descriptions.
-
-#### Scenario: Schema documentation available
-- **WHEN** the data ingestion module is imported
-- **THEN** a schema dictionary or documentation is accessible describing all expected columns
-
-### Requirement: Handle Missing Financial Data
-The system SHALL handle the NULL values from the UNION ALL (enjoy_fac_hotel_financial has 4 extra NULL columns) appropriately.
-
-#### Scenario: NULL column handling
-- **WHEN** loading data from enjoy_fac_hotel_financial table
-- **THEN** the system identifies which columns are NULL and documents their intended purpose
-- **THEN** the system provides options to drop, impute, or flag these columns
-
-### Requirement: NULL Target Handling Before Aggregation
-The system SHALL exclude NULL `rooms_sold` values (which come exclusively from `enjoy_fac_hotel_financial` rows) from the daily room-nights aggregation BEFORE any missing-value imputation runs.
-
-#### Scenario: Financial rows do not contaminate the target series
-- **WHEN** the combined dataset contains rows with NULL rooms_sold (financial-table rows)
-- **THEN** the daily aggregation skips NULL values rather than treating them as zeros
-- **THEN** missing-value imputation runs only after aggregation, so forward-fill can never propagate financial NULLs into the room-nights series
-- **THEN** the system reports how many rows were excluded and on which dates no operational observation existed
-
-### Requirement: Synthetic Sample Data Generation
-The system SHALL generate a synthetic (fictional) data file for offline development and testing of the room-nights forecasting model when SQL access or real data is unavailable.
-
-#### Scenario: Fictional data file for offline testing
-- **WHEN** the sample generator is invoked (e.g., no SQL configuration and no CSV present)
-- **THEN** the system generates a CSV with daily rows for multiple hotels mirroring the production schema: date, hotel_id, rooms_sold, available_rooms, occupancy_rate, adr, revpar, room_revenue, revenue (plus NULL financial columns)
-- **THEN** generated room nights are capacity-bounded (0 <= rooms_sold <= available_rooms) and integer-valued
-- **THEN** the generated series exhibit realistic structure: weekly and annual seasonality, a gentle trend, Costa Rica holiday effects (including Monday-bridge long weekends), noise, and at least one simulated capacity change (renovation dip)
-- **THEN** correlational variables are generated with exact physical identities: occupancy_rate = rooms_sold/available_rooms; room_revenue = rooms_sold × adr; revenue = room_revenue × (1 + ancillary share); revpar = room_revenue/available_rooms
-- **THEN** the generated file can be loaded and processed end-to-end by the pipeline without code changes
-
-#### Scenario: Reproducible generation
-- **WHEN** the generator runs with the same seed
-- **THEN** it produces an identical file (deterministic generation for testing)
+## ADDED Requirements
 
 ### Requirement: Synthetic Generator Mirroring the Real Schemas
 The system SHALL generate fictional test data that mirrors the real production schemas — a snapshot table with realized and future-book rows (`snap_flag` 0/1, `snapshotdate`/`stay_date`, lead-dependent booking growth) and an inventory table with per-room-type capacity — so the pipeline is developed and tested offline exactly as it will run in production.

@@ -85,6 +85,7 @@ class _IncrementalRowBuilder:
         target_col: str,
         values: np.ndarray,
         future_known: Optional[dict[str, float]] = None,
+        future_series: Optional[dict[str, pd.Series]] = None,
     ):
         self.eng = feature_engineer
         self.he = holiday_engineer
@@ -93,6 +94,9 @@ class _IncrementalRowBuilder:
         # Forward-known passthrough columns (e.g., available_rooms): their
         # future value is the last observed value (planned capacity).
         self.future_known: dict[str, float] = dict(future_known or {})
+        # Forward-known per-DATE covariates (e.g., rotb_d90 from current books):
+        # value for a future date = the covariate series at that date.
+        self.future_series: dict[str, pd.Series] = dict(future_series or {})
 
         if holiday_engineer is not None:
             self.pre_days = holiday_engineer.pre_days
@@ -141,6 +145,16 @@ class _IncrementalRowBuilder:
     # -- internals -----------------------------------------------------------
 
     def _compute(self, col: str, date: pd.Timestamp, cal: dict[str, int]) -> object:
+        # Forward-known per-DATE covariates (books, planned events)
+        if col in self.future_series:
+            series = self.future_series[col]
+            if date not in series.index:
+                raise ValueError(
+                    f"Future covariate '{col}' has no value for {date.date()}. "
+                    "Covariates must cover every forecast date."
+                )
+            return float(series.loc[date])
+
         # Forward-known passthrough columns (planned capacity etc.)
         if col in self.future_known:
             return self.future_known[col]
@@ -251,6 +265,7 @@ def recursive_forecast(
     holiday_engineer: Optional[HolidayFeatureEngineer] = None,
     use_incremental: bool = True,
     future_known_cols: Optional[list[str]] = None,
+    future_covariates: Optional[pd.DataFrame] = None,
 ) -> np.ndarray:
     """Generate leakage-free multi-step predictions with a fitted GBM model.
 
@@ -277,6 +292,10 @@ def recursive_forecast(
     future_known_cols : list[str], optional
         Columns whose future values are known/planned (e.g., available_rooms).
         They are carried through the recursion with their last observed value.
+    future_covariates : pd.DataFrame, optional
+        Forward-known per-DATE covariates (e.g., on-the-books rotb_d90 from
+        current reservations). Must contain `date_col` plus one column per
+        covariate, with a value for every forecast date (missing dates raise).
 
     Returns
     -------
@@ -314,6 +333,23 @@ def recursive_forecast(
             raise ValueError(f"Forward-known column '{col}' has no observed values.")
         fk[col] = float(last.iloc[-1])
 
+    # Forward-known per-DATE covariates: {col: Series indexed by date}
+    future_series: dict[str, pd.Series] = {}
+    if future_covariates is not None:
+        cov = future_covariates.copy()
+        cov[date_col] = pd.to_datetime(cov[date_col])
+        if cov[date_col].duplicated().any():
+            raise ValueError(f"future_covariates has duplicated dates in '{date_col}'.")
+        cov = cov.set_index(date_col).sort_index()
+        future_series = {col: cov[col].astype(float) for col in cov.columns}
+        missing = [d for d in future_dates if not all(d in s.index for s in future_series.values())]
+        if missing:
+            raise ValueError(
+                f"future_covariates missing values for {len(missing)} forecast dates "
+                f"(first: {pd.Timestamp(missing[0]).date()}). Covariates must cover "
+                "every forecast date."
+            )
+
     # Outlier flag columns produced by the pipeline are unknown for future
     # rows; assume "not an outlier" (0), matching the flag semantics.
     outlier_cols = [c for c in feature_cols if c.endswith("_outlier")]
@@ -328,9 +364,11 @@ def recursive_forecast(
             # Build the reference probe first (this also fits the holiday
             # calendar if it was not fitted yet), then the incremental builder
             # sees the exact same state the reference path will use.
-            placeholder = pd.DataFrame(
-                {date_col: [first_date], target_col: [np.nan], **{c: [fk[c]] for c in future_known_cols}}
-            )
+            placeholder = pd.DataFrame({
+                date_col: [first_date], target_col: [np.nan],
+                **{c: [fk[c]] for c in future_known_cols},
+                **{c: [future_series[c].loc[first_date]] for c in future_series},
+            })
             probe_ctx = pd.concat([history, placeholder], ignore_index=True)
             probe_full = feature_engineer.transform(probe_ctx)
             if holiday_engineer is not None:
@@ -342,6 +380,7 @@ def recursive_forecast(
                 feature_engineer, holiday_engineer, target_col,
                 history[target_col].to_numpy(dtype=np.float64),
                 future_known=fk,
+                future_series=future_series,
             )
             if candidate.verify(probe_row, first_date, builder_columns):
                 builder = candidate
@@ -381,7 +420,8 @@ def recursive_forecast(
             for i, d in enumerate(future_dates):
                 row = pd.DataFrame(
                     {date_col: [d], target_col: [np.nan],
-                     **{c: [fk[c]] for c in future_known_cols}}
+                     **{c: [fk[c]] for c in future_known_cols},
+                     **{c: [future_series[c].loc[d]] for c in future_series}}
                 )
                 context = pd.concat([history_loop, row], ignore_index=True)
 

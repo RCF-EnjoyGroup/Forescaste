@@ -94,9 +94,12 @@ class Evaluator:
 
         if len(actuals) == 0:
             logger.warning("No valid observations for metric computation.")
+            empty_metrics = {m: np.nan for m in ["MAE", "RMSE", "MAPE", "sMAPE", "MASE", "WAPE", "Bias%"]}
+            empty_metrics["Over_days"] = 0
+            empty_metrics["Under_days"] = 0
             return MetricsResult(
                 model_name=model_name,
-                metrics={m: np.nan for m in ["MAE", "RMSE", "MAPE", "sMAPE", "MASE", "WAPE"]},
+                metrics=empty_metrics,
                 n_obs=0,
                 split=split,
             )

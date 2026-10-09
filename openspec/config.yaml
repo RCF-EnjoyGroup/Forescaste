@@ -73,6 +73,50 @@ roomnights:
   # available_rooms is forward-known (capacity is planned) and stays eligible.
   excluded_feature_prefixes: ["revenue", "room_revenue"]
 
+# Real production sources (confirmed schemas, 2026-10-06):
+#   staging.enjoy_fac_hotel  -> booking snapshots (snap_flag 0=real, 1=future books)
+#   public.enjoy_inventory   -> official capacity by property/date/room-type
+# The pipeline consumes exported aggregate CSVs (SQL pushdown); see the queries
+# in src/forecasting/data/real_sources.py for systems to run.
+roomnights_real:
+  sources:
+    snapshots_table: "staging.enjoy_fac_hotel"
+    inventory_table: "public.enjoy_inventory"
+  # variant -> canonical key (codes and names observed in the real tables)
+  property_map:
+    "Hotel Royal Corin": "corin"
+    "CORIN": "corin"
+    "LAPAS": "lapas"
+    "MARINA": "marina"
+    "VILLAS": "villas"
+    "SJOSL": "sjo"
+    "LIRAK": "lirak"
+    "LIREL": "lirel"
+    "FIESTA": "fiesta"
+  display_names:
+    corin: "Hotel Royal Corin"
+    lapas: "Lapas"
+    marina: "Marina"
+    villas: "Villas"
+    sjo: "SJO (SJOSL)"
+    lirak: "LIRAK"
+    lirel: "LIREL"
+    fiesta: "Fiesta"
+  lead_buckets: [7, 14, 30, 60, 90, 180, 365]
+  multi_step_min_lead: 365       # only buckets >= this are forward-known for the FULL horizon
+  horizon_days: 365              # deliverable: 12-month detailed forecast
+  training_window_years: 4       # recent-window policy (old regimes excluded)
+  demand_exclude_ratecodes: ["SYSTEM_ADJUST"]
+  capacity_fallback: "last_known"
+  cold_start_min_history_days: 90
+  # Frozen properties (closed/paused, confirmed by operations 2026-10): shown in
+  # the quality report but excluded from ALL modeling/forecast frames.
+  frozen_properties: [lapas, lirak]
+  csv_paths:
+    demand: "data/roomnights_real/demand_daily.csv"
+    pickup: "data/roomnights_real/pickup_by_lead.csv"
+    capacity: "data/roomnights_real/capacity_daily.csv"
+
 # Modeling configuration
 models:
   # Statistical models
