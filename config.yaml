@@ -39,3 +39,18 @@ data:
   # hotel (spec data-ingestion: normalización antes de cruzar fuentes).
   property_aliases:
     "Hotel Royal Corin": CORIN
+  # Propiedades CERRADAS: excluidas del motor completo (ingesta → entregables);
+  # el manifiesto registra la exclusión. Nombre canónico (post-alias).
+  excluded_properties: [LIRAK, LAPAS]
+
+# Curva de pickup (candidato operante): a leads largos el on-the-books cubre
+# poco, así que la curva se condiciona por la temporada de la fecha de estancia
+# y se entrena solo con la ventana de recencia — el forecast converge al nivel
+# estacional del stay, no al promedio anual. A leads cortos (≤ season_min_lead)
+# se usa la curva agrupada de la propiedad (más datos por bin, menos ruido).
+# Defaults validados con A/B sobre la ventana de verificación 2026-07-09..10-06.
+pickup_curve:
+  season_conditional: true   # curva por (propiedad, temporada) con fallback
+  season_min_lead: 30         # la curva estacional aplica solo a leads ≥ 30
+  max_history_days: 1095      # ventana de recencia del fit (3 años)
+  min_stays_per_bucket: 30    # menos estancias ⇒ fallback a la curva de propiedad

@@ -71,7 +71,11 @@ ML_MIN_TRAIN_OBS = 60
 # --------------------------------------------------------------------------
 
 def load_real_sources() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Lee los CSVs reales y devuelve (demand, capacity, pickup, demand_aliased)."""
+    """Lee los CSVs reales y devuelve (demand, capacity, pickup, demand_aliased).
+
+    Las propiedades cerradas (``data.excluded_properties``) se filtran tras
+    resolver alias: no cruzan al benchmark ni a la corrida end-to-end.
+    """
     cfg = load_config()
     paths = cfg.source_paths
     demand = pd.read_csv(paths["demand"])
@@ -86,6 +90,13 @@ def load_real_sources() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Da
     capacity = _apply_aliases(capacity, cap_schema, cfg.property_aliases)
     pickup = _apply_aliases(pickup, pk_schema, cfg.property_aliases)
 
+    excluded = [str(p) for p in cfg.excluded_properties]
+    if excluded:
+        demand = demand.loc[~demand[dem_schema.property_col].astype(str).isin(excluded)]
+        capacity = capacity.loc[~capacity[cap_schema.property_col].astype(str).isin(excluded)]
+        pickup = pickup.loc[~pickup[pk_schema.property_col].astype(str).isin(excluded)]
+        print(f"      propiedades cerradas excluidas: {excluded}")
+
     dem = _normalize_demand(demand, dem_schema)
     cap = _normalize_capacity(capacity, cap_schema)
     pick = _normalize_pickup(pickup, pk_schema)
@@ -99,6 +110,7 @@ def load_real_sources() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Da
 def real_fold_metrics(
     dem: pd.DataFrame, pick: pd.DataFrame, cutoff: pd.Timestamp,
     horizon: int = FOLD_HORIZON, n_folds: int = 4,
+    curve_params: dict | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Métricas out-of-sample REALES de los 7 candidatos, por propiedad.
 
@@ -148,7 +160,7 @@ def real_fold_metrics(
                 continue
             preds: dict[str, pd.Series] = {}
             for model in CANDIDATE_MODELS:
-                fitted = fit_candidate(model, dem_p, pick_p, c, horizon)
+                fitted = fit_candidate(model, dem_p, pick_p, c, horizon, curve_params)
                 pred = predict_candidate(fitted, pick_p, dates)
                 preds[model] = pred.set_index("stay_date")["raw_forecast_rn"]
             per_prop[p] = preds
@@ -192,6 +204,7 @@ def real_fold_metrics(
 
 def per_property_backtest(
     dem: pd.DataFrame, pick: pd.DataFrame, cutoff: pd.Timestamp, horizon: int = 30,
+    curve_params: dict | None = None,
 ) -> pd.DataFrame:
     """Backtest por propiedad vía el MISMO pipeline del runner.
 
@@ -208,7 +221,7 @@ def per_property_backtest(
     curves = curves.loc[curves["lead_days"] <= horizon]
     if curves.empty:
         return pd.DataFrame(columns=["property", "stay_date", "lead_days", "forecast", "actual"])
-    model = PickupCurveModel().fit(curves)
+    model = PickupCurveModel(**(curve_params or {})).fit(curves)
 
     dates = pd.date_range(c + pd.Timedelta(days=1), periods=horizon, freq="D")
     props = sorted(dem["property"].dropna().unique())
@@ -292,7 +305,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"      modo: {modo}")
 
     print("[2/5] Benchmark real (folds trimestrales × 30d, 7 candidatos, por propiedad)...")
-    folds, error_panel = real_fold_metrics(dem, pick, cutoff)
+    curve_params = dict(cfg.pickup_curve)
+    folds, error_panel = real_fold_metrics(dem, pick, cutoff, curve_params=curve_params)
     if folds.empty:
         print("ERROR: el benchmark no produjo evaluaciones (¿histórico insuficiente?).", file=sys.stderr)
         return 1
@@ -306,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     eval_frame: pd.DataFrame | None = None
     if args.futuro:
         print(f"[3/5] Backtest real T-{horizon}d (métricas y desgloses)...")
-        eval_bt = per_property_backtest(dem, pick, cutoff, horizon=horizon)
+        eval_bt = per_property_backtest(dem, pick, cutoff, horizon=horizon, curve_params=curve_params)
         if eval_bt.empty:
             print("ERROR: el backtest previo al corte no produjo observaciones reales.", file=sys.stderr)
             return 1

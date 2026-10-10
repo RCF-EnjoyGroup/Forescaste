@@ -163,6 +163,13 @@ openspec/                # specs, propuestas y changelog del proyecto
   detiene la corrida antes de entrenar y no publica forecast.
 - **Sin doble conteo**: la demanda pasa por filtros (`snap_flag`, ratecodes de
   ajuste) definidos en el contrato de datos.
+- **Propiedades cerradas excluidas**: `data.excluded_properties` en
+  `config.yaml` (hoy LIRAK y LAPAS) las saca de toda la corrida; el manifiesto
+  y el accuracy report declaran la exclusión.
+- **Curva de pickup estacional**: a leads ≥ `pickup_curve.season_min_lead`
+  (30) la curva se condiciona por la temporada de la fecha de estancia — el
+  forecast a largo plazo converge al nivel estacional del stay; a leads
+  cortos se preserva el pooling por propiedad. Defaults validados con A/B.
 - **`final_forecast ≤ capacity`** en el 100% de los registros, **y también
   `p90 ≤ capacity`**: la banda de incertidumbre jamás publica valores
   físicamente imposibles.

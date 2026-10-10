@@ -93,6 +93,22 @@ from src.validation.report import build_report
 CANON = {"property": "property", "stay_date": "stay_date"}
 
 
+def _merge_keep_index(left: pd.DataFrame, right: pd.DataFrame, on: list[str]) -> pd.DataFrame:
+    """Merge left-preservando el índice (la suite de leakage alinea por índice).
+
+    ``DataFrame.merge`` resetea el índice a un RangeIndex; el check de
+    features-calculadas-con-dataset-completo compara filas por índice, así que
+    la correspondencia con las fuentes originales debe preservarse. Si el
+    right tiene claves duplicadas el left se duplicaría → error explícito.
+    """
+    idx = left.index
+    out = left.merge(right, on=on, how="left")
+    if len(out) != len(left):
+        raise ValueError(f"merge duplicó filas: claves no únicas en {on}")
+    out.index = idx
+    return out
+
+
 # --------------------------------------------------------------------------
 # helpers de serialización honesta (NaN/inf → null)
 # --------------------------------------------------------------------------
@@ -172,6 +188,7 @@ def _sampled_backtest(
     model_by_property: dict[str, str],
     cutoff: pd.Timestamp,
     backtest_cfg: dict | None = None,
+    curve_params: dict | None = None,
 ) -> tuple[dict, dict[str, pd.Series], pd.Series]:
     """Snapshots T-90..T-1 por propiedad con el campeón que opera.
 
@@ -219,7 +236,7 @@ def _sampled_backtest(
             _model=model_name, _pick=pick_p, _dem=dem_p, _prop=prop,
         ) -> dict:
             fc_date = pd.Timestamp(stay) - pd.Timedelta(days=int(lead))
-            fitted = fit_candidate(_model, _dem, _pick, fc_date, int(lead))
+            fitted = fit_candidate(_model, _dem, _pick, fc_date, int(lead), curve_params)
             pred = predict_candidate(fitted, _pick, pd.DatetimeIndex([pd.Timestamp(stay)]))
             r = pred.iloc[0]
             booked = r.get("current_booked_rn")
@@ -455,6 +472,15 @@ def run_end_to_end(
         demand = _apply_aliases(demand, schemas["demand"], config.property_aliases)
         capacity = _apply_aliases(capacity, schemas["capacity"], config.property_aliases)
         pickup = _apply_aliases(pickup, schemas["pickup"], config.property_aliases)
+
+    # propiedades cerradas: exclusión configurable ANTES de calidad — no
+    # participan de ingesta, features, benchmark, forecast ni backtest
+    excluded_props = [str(p) for p in config.excluded_properties]
+    if excluded_props:
+        demand = demand.loc[~demand[schemas["demand"].property_col].astype(str).isin(excluded_props)]
+        capacity = capacity.loc[~capacity[schemas["capacity"].property_col].astype(str).isin(excluded_props)]
+        pickup = pickup.loc[~pickup[schemas["pickup"].property_col].astype(str).isin(excluded_props)]
+
     raw_sources = {
         "demand": (demand, schemas["demand"]),
         "capacity": (capacity, schemas["capacity"]),
@@ -501,8 +527,8 @@ def run_end_to_end(
         [["property", "stay_date", "pickup_rn"]]
         .rename(columns={"pickup_rn": "current_booked_rn"})
     )
-    df = df.merge(cap, on=["property", "stay_date"], how="left")
-    df = df.merge(pk_last, on=["property", "stay_date"], how="left")
+    df = _merge_keep_index(df, cap, ["property", "stay_date"])
+    df = _merge_keep_index(df, pk_last, ["property", "stay_date"])
     df = add_capacity_features(df)
     if "capacity_remaining" not in df.columns:
         missing_feats = {**missing_feats, "capacity_remaining": ["__all__"]}
@@ -517,9 +543,7 @@ def run_end_to_end(
         for c in pk_feats.columns
         if c not in df.columns or c in ("property", "stay_date")
     ]
-    df = df.merge(
-        pk_feats[pk_cols], on=["property", "stay_date"], how="left", suffixes=("", "_pk")
-    )
+    df = _merge_keep_index(df, pk_feats[pk_cols], ["property", "stay_date"])
 
     # ---------- 3b. suite de leakage COMPLETA (features → matriz incluida)
     def _demand_feature_fn(frame: pd.DataFrame) -> pd.DataFrame:
@@ -586,8 +610,9 @@ def run_end_to_end(
     property_fallback = dict(per_prop_sel.property_fallback) if per_prop_sel else {}
 
     # ---------- 5. forecast del horizonte con el campeón (por propiedad)
+    curve_params = dict(config.pickup_curve)
     raw, fitted_models = build_forecasts(
-        model_by_property, history, pick, cutoff, horizon_days
+        model_by_property, history, pick, cutoff, horizon_days, curve_params
     )
 
     # ---------- 6. capacidad + ocupación (por fecha; fallback mediana → 100)
@@ -604,7 +629,7 @@ def run_end_to_end(
 
     # ---------- 7. backtest T-90..T-1 muestreado (residuos por lead band)
     backtest_report, residual_bands, residuals_flat = _sampled_backtest(
-        history, pick, model_by_property, cutoff, backtest_cfg
+        history, pick, model_by_property, cutoff, backtest_cfg, curve_params
     )
 
     # ---------- 8. intervalos P10/P50/P90 anclados al punto publicado
@@ -669,14 +694,20 @@ def run_end_to_end(
     evaluated_props = (
         sorted(eval_src["property"].dropna().unique()) if eval_src is not None else []
     )
-    excluded_props = {
-        p: "sin reales en la ventana evaluada" for p in props if p not in evaluated_props
+    excluded_props_map = {
+        p: "propiedad cerrada (configuración)" for p in excluded_props
+    }
+    excluded_no_actuals = {
+        p: "sin reales en la ventana evaluada"
+        for p in props
+        if p not in evaluated_props
     }
     evaluation_coverage = {
         "n_properties_portfolio": len(props),
         "n_properties_evaluated": len(evaluated_props),
         "evaluated": evaluated_props,
-        "excluded": excluded_props,
+        "excluded": excluded_no_actuals,
+        "excluded_closed": excluded_props_map,
         "n_obs": int(metrics.get("n_obs", 0)),
     }
 
@@ -780,6 +811,7 @@ def run_end_to_end(
             "model": champion,
             "per_property": model_by_property,
             "horizon_days": horizon_days,
+            "pickup_curve": _jsonable(curve_params),
         },
         metrics=_jsonable(metrics) if metrics else {"placeholder": 0.0},
         seed=int(config.random_seed),
@@ -796,6 +828,7 @@ def run_end_to_end(
                 "end": str((cutoff + pd.Timedelta(days=horizon_days)).date()),
             },
             "capacity_usage": "horizon_cap_only",
+            "excluded_properties": _jsonable(excluded_props_map),
             "champion_reason": benchmark.selection.reason,
             "champion_significance": _jsonable(benchmark.selection.significance),
             "property_fallback": property_fallback,
@@ -844,6 +877,8 @@ def run_end_to_end(
             model_by_property=model_by_property,
             benchmark_source=benchmark_source,
             interval_source=interval_source,
+            excluded_props_map=excluded_props_map,
+            curve_params=curve_params,
         ),
     )
 
@@ -869,6 +904,7 @@ def run_end_to_end(
             "champion": champion,
             "model_by_property": model_by_property,
             "evaluation_coverage": evaluation_coverage,
+            "excluded_properties": excluded_props_map,
         },
     )
     # ---------- 14. reporte visual HTML (vista; NO cuenta entre los 10 entregables)
@@ -950,6 +986,8 @@ def _technical_doc(
     model_by_property: dict[str, str] | None = None,
     benchmark_source: str = "real_backtest",
     interval_source: str = "real_backtest",
+    excluded_props_map: dict[str, str] | None = None,
+    curve_params: dict | None = None,
 ) -> str:
     disclaimer = (
         "> ⚠️ **DISCLAIMER**: corrida ejecutada con datos de MUESTRA en el esquema real "
@@ -971,6 +1009,17 @@ def _technical_doc(
     per_prop_md = (
         "\n".join(f"  - {p}: `{m}`" for p, m in sorted(per_prop.items())) or "  - (todas con el campeón global)"
     )
+    excluded_md = (
+        "\n".join(f"  - {p}: cerrada (excluida por configuración)" for p in sorted(excluded_props_map))
+        or "  - (ninguna)"
+    )
+    curve_md = (
+        f"temporada del stay condicionada ({'activada' if curve_params.get('season_conditional') else 'desactivada'}), "
+        f"ventana de recencia {curve_params.get('max_history_days', '—')}d, "
+        f"fallback con < {curve_params.get('min_stays_per_bucket', '—')} estancias"
+        if curve_params
+        else "parámetros por defecto"
+    )
     bench_note = (
         "backtest real por propiedad (folds trimestrales, sin solape con la ventana de reporte)"
         if benchmark_source == "real_backtest"
@@ -988,8 +1037,11 @@ def _technical_doc(
 ## Modelo operativo
 - **Campeón**: `{champion}` — seleccionado por el benchmark ({bench_note}) y
   **operado** en esta corrida (el forecast lo genera el campeón).
+- **Curva de pickup**: {curve_md}
 - **Selección por propiedad**:
 {per_prop_md}
+- **Propiedades cerradas (excluidas)**:
+{excluded_md}
 - La significancia de la selección (Diebold-Mariano) queda en el manifiesto
   (`champion_significance`); un empate estadístico se desempata por parsimonia.
 

@@ -20,6 +20,14 @@ _SEASON_BY_MONTH = {
 }
 
 
+def season_of_month(month: int) -> str:
+    """Temporada de un mes (1–12); mismo mapa que la feature ``season``."""
+    m = int(month)
+    if not 1 <= m <= 12:
+        raise ValueError(f"mes fuera de rango: {m}")
+    return _SEASON_BY_MONTH[m]
+
+
 def add_calendar_features(
     df: pd.DataFrame,
     date_col: str = "stay_date",

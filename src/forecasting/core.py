@@ -296,7 +296,12 @@ class FittedCandidate:
 
 
 def _fit_pickup(
-    dem_p: pd.DataFrame, pick_p: pd.DataFrame, c: pd.Timestamp, horizon: int, prop: str,
+    dem_p: pd.DataFrame,
+    pick_p: pd.DataFrame,
+    c: pd.Timestamp,
+    horizon: int,
+    prop: str,
+    curve_params: dict | None = None,
 ) -> FittedCandidate:
     hist = dem_p.loc[dem_p["stay_date"] <= c]
     pkf = pick_p.loc[pick_p["snapshot_date"] <= c]
@@ -310,7 +315,7 @@ def _fit_pickup(
     )
     if curves.empty:
         return fitted
-    fitted.artifact = PickupCurveModel().fit(curves)
+    fitted.artifact = PickupCurveModel(**(curve_params or {})).fit(curves)
     return fitted
 
 
@@ -367,12 +372,17 @@ def fit_candidate(
     pick_p: pd.DataFrame,
     c: pd.Timestamp,
     horizon: int,
+    curve_params: dict | None = None,
 ) -> FittedCandidate:
-    """Entrena UN candidato para UNA propiedad con datos ≤ corte."""
+    """Entrena UN candidato para UNA propiedad con datos ≤ corte.
+
+    ``curve_params`` configura la curva de pickup (temporada del stay,
+    ventana de recencia, umbral de fallback) desde el ``config.yaml``.
+    """
     c = pd.Timestamp(c)
     prop = str(dem_p["property"].iloc[0]) if len(dem_p) else PORTFOLIO
     if model_name == "pickup_curve":
-        return _fit_pickup(dem_p, pick_p, c, horizon, prop)
+        return _fit_pickup(dem_p, pick_p, c, horizon, prop, curve_params)
     if model_name == "seasonal_naive":
         hist = dem_p.loc[dem_p["stay_date"] <= c]
         fitted = FittedCandidate(
@@ -478,6 +488,7 @@ def build_forecasts(
     pick: pd.DataFrame,
     cutoff: pd.Timestamp,
     horizon_days: int,
+    curve_params: dict | None = None,
 ) -> tuple[pd.DataFrame, dict[str, FittedCandidate]]:
     """Despacha el forecast del horizonte con el modelo ganador por propiedad.
 
@@ -498,7 +509,7 @@ def build_forecasts(
         model_name = model_by_property[prop]
         dem_p = dem.loc[dem["property"] == prop]
         pick_p = pick.loc[pick["property"] == prop]
-        fitted = fit_candidate(model_name, dem_p, pick_p, cutoff, horizon_days)
+        fitted = fit_candidate(model_name, dem_p, pick_p, cutoff, horizon_days, curve_params)
         fitted_by_property[prop] = fitted
         pred = predict_candidate(fitted, pick_p, horizon_dates)
         pred["property"] = prop

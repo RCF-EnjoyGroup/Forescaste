@@ -55,3 +55,17 @@ El sistema SHALL detener el entrenamiento cuando exista un problema crítico de 
 - **WHEN** la corrida productiva end-to-end evalúa la calidad de los datos
 - **THEN** un status `fail` detiene la corrida antes de entrenar y no publica ningún entregable de forecast
 - **THEN** el status de calidad registrado en el manifiesto proviene del mismo gate que decide la detención
+
+
+### Requirement: Propiedades cerradas excluidas
+El sistema SHALL soportar la exclusión configurable de propiedades cerradas (`data.excluded_properties`); las propiedades excluidas no participan de ingesta, calidad, features, benchmark, forecast, backtest ni KPIs, y la exclusión SHALL quedar registrada en el manifiesto.
+
+#### Scenario: Exclusión aplicada en toda la corrida
+- **WHEN** una propiedad está en `excluded_properties`
+- **THEN** no aparece en la tabla de forecast, el benchmark, el backtest ni la cobertura de evaluación
+- **THEN** el manifiesto declara la lista de propiedades excluidas
+
+#### Scenario: Exclusión tras alias
+- **WHEN** una propiedad cerrada aparece bajo un alias distinto en alguna fuente
+- **THEN** el alias se resuelve primero y la exclusión se aplica al nombre canónico
+- **THEN** ninguna fila de la propiedad excluida cruza al pipeline

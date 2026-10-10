@@ -101,10 +101,13 @@ def add_demand_features(
         g, feats = _daily_features(g, label)
         if not feats:
             return g
-        feat_df = pd.DataFrame(feats)
-        # mapear de vuelta SOLO a las filas originales del grupo (huecos
-        # re-obtienen NaN en las features, sin cambiar el conteo de filas)
-        return g.merge(feat_df, left_on=date_col, right_index=True, how="left")
+        # mapear por VALOR de fecha (no por merge): preserva el índice original
+        # de las filas — la suite de leakage alinea por índice y un merge lo
+        # resetearía silenciosamente
+        dates = pd.DatetimeIndex(pd.to_datetime(g[date_col], errors="coerce"))
+        for name, s in feats.items():
+            g[name] = s.reindex(dates).to_numpy(dtype=float)
+        return g
 
     if group_col:
         pieces = [_per_group(g, str(key)) for key, g in groups]
