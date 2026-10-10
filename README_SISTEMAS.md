@@ -73,6 +73,36 @@ GROUP BY property, business_date
 ORDER BY property, business_date;
 ```
 
+### Fuente 4 (OPCIONAL) — Eventos privados (conciertos, congresos, torneos)
+
+Exportar como **`data/events.csv`** (ruta configurable en `config.yaml` →
+`data.events_path`). Es la única fuente que NO viene de la base de
+transacciones: son los eventos que el negocio conoce por adelantado
+(calendario de eventos de Revenue Management, calendario deportivo/cultural
+de la zona). **Mientras no exista el archivo, el motor funciona igual y
+declara la fuente ausente en el manifiesto.**
+
+```
+event_name,event_date,property
+Congreso Tech CR,2026-05-10,CORIN          ← evento SOLO de esa propiedad
+Festival Internacional de Música,2026-09-12,  ← blank/NaN = TODO el portafolio
+```
+
+Reglas del loader (falla la corrida antes de entrenar si no se cumplen):
+
+| Regla | Detalle |
+|---|---|
+| Columnas | `event_name` (o `evento`/`nombre`), `event_date` (o `fecha`), `property` opcional (o `propiedad`/`hotel`) |
+| Fechas | `YYYY-MM-DD`; una fecha ilegible **detiene la corrida** con el número de filas afectadas |
+| Duplicados | (nombre + fecha + propiedad) — **detienen la corrida** con ejemplos |
+| `property` | Nombre canónico (mismos nombres que en `demand_daily.csv`); vacío/NaN = evento de portafolio |
+| Alcance temporal | Eventos futuros Y pasados: los pasados alimentan las curvas de pickup por ventana de evento (dentro de la ventana de recencia de 3 años) |
+
+Qué hace el motor con cada evento: su fecha entra a la feature de distancia
+al "feriado/evento más cercano" de los candidatos ML, y su ventana ±4 días
+genera una curva de pickup propia (con fallback si hay poca historia). Un
+evento con `property` asignada solo afecta a esa propiedad.
+
 ---
 
 ## Formato de exportación
@@ -91,6 +121,7 @@ ORDER BY property, business_date;
 demand_daily.csv   → property, stay_date, rooms_sold, room_revenue
 pickup_by_lead.csv → property, stay_date, lead_days, rooms_booked
 capacity_daily.csv → property, business_date, available_rooms
+events.csv (opcional) → event_name, event_date, property (opcional)
 ```
 
 ---
@@ -114,7 +145,8 @@ data:
 data/
 ├── demand_daily.csv
 ├── pickup_by_lead.csv
-└── capacity_daily.csv
+├── capacity_daily.csv
+└── events.csv   ← OPCIONAL: sin este archivo el motor funciona igual
 ```
 
 > `data/` está en `.gitignore`: los CSV reales nunca se commitean.
@@ -128,6 +160,7 @@ data/
 | Demanda (Query 1) | Diaria | Cada día se cierra una nueva fecha de estadía |
 | Pickup (Query 2) | Diaria | Los libros cambian todos los días (reservas/cancelaciones) |
 | Capacidad (Query 3) | Semanal o al cambio | El inventario oficial cambia poco (renovaciones/cierres) |
+| Eventos (Fuente 4, opcional) | Al conocerse / al cambio | Un evento nuevo vale más mientras más lead tenga |
 
 > Nota: el pickup **incluye fechas de estadía futuras** — eso es correcto y
 > necesario: son las reservas vigentes que alimentan el pronóstico.
@@ -171,6 +204,8 @@ data/
   Hotel Royal Corin, LIRAK, LIREL, MARINA, FIESTA
   (en capacidad pueden venir como CORIN — el alias se aplica solo)
 □ pickup_by_lead.csv contiene fechas de estadía FUTURAS (correcto)
+□ events.csv (si existe) → fechas YYYY-MM-DD legibles y sin duplicados
+  (nombre + fecha + propiedad)
 ```
 
 ---

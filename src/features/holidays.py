@@ -66,39 +66,75 @@ def holiday_key(name: str) -> str:
 
 @dataclass(frozen=True)
 class HolidayCalendar:
-    """Calendario compartido de la corrida (benchmark/forecast/backtest)."""
+    """Calendario compartido de la corrida (benchmark/forecast/backtest).
 
-    dates: pd.DatetimeIndex  # fechas exactas de feriado, ordenadas
-    windows: pd.Series       # fecha → clave semántica (día dentro de ventana)
+    ``dates``: fechas de feriados Y eventos (alimentan la feature de
+    distancia ``days_to_nearest_holiday`` — "feriado o evento más cercano").
+    ``holiday_dates``: solo feriados del calendario público (el indicador
+    ``is_holiday`` queda reservado a ellos, nunca marca eventos).
+    ``windows``: fecha → clave (día dentro de ventana de feriado o evento de
+    portafolio). ``scoped``: ventanas de eventos con propiedad asignada —
+    solo aplican a esa propiedad.
+    """
+
+    dates: pd.DatetimeIndex  # feriados + eventos, ordenadas
+    windows: pd.Series       # fecha → clave (feriados y eventos de portafolio)
     countries: tuple[str, ...]
     window_days: int
+    holiday_dates: pd.DatetimeIndex | None = None  # solo feriados públicos
+    scoped: dict | None = None  # property → Series(fecha → clave de evento)
+    # distancia (días) al feriado/evento dueño de cada fecha de ventana —
+    # permite desempates verdaderos al combinar calendarios
+    window_dists: pd.Series | None = None
 
     def is_holiday(self, date) -> bool:
-        if len(self.dates) == 0:
+        """Solo feriados del calendario público (nunca eventos privados)."""
+        holiday_dates = self.holiday_dates if self.holiday_dates is not None else self.dates
+        if len(holiday_dates) == 0:
             return False
-        return pd.Timestamp(date).normalize() in set(self.dates)
+        return pd.Timestamp(date).normalize() in set(holiday_dates)
 
     def days_to_nearest(self, date) -> float:
-        """Días (absolutos) al feriado más cercano; NaN sin calendario."""
+        """Días (absolutos) al feriado/evento más cercano; NaN sin calendario."""
         if len(self.dates) == 0:
             return float("nan")
         d = pd.Timestamp(date).normalize()
         return float(abs((self.dates - d).days).min())
 
-    def window_key(self, date):
-        """Clave del feriado cuya ventana contiene la fecha (None fuera)."""
-        if len(self.windows) == 0:
-            return None
-        key = self.windows.get(pd.Timestamp(date).normalize())
-        return None if pd.isna(key) else str(key)
+    def window_key(self, date, property: str | None = None):
+        """Clave del feriado/evento cuya ventana contiene la fecha.
+
+        Consulta primero el mapa global (feriados + eventos de portafolio) y
+        luego el mapa scoped de ``property`` (eventos con propiedad asignada).
+        Empate entre ambos: gana el global (el feriado es más amplio).
+        """
+        if len(self.windows) > 0:
+            key = self.windows.get(pd.Timestamp(date).normalize())
+            if key is not None and not pd.isna(key):
+                return str(key)
+        if property is not None and self.scoped:
+            scoped = self.scoped.get(str(property))
+            if scoped is not None and len(scoped) > 0:
+                key = scoped.get(pd.Timestamp(date).normalize())
+                if key is not None and not pd.isna(key):
+                    return str(key)
+        return None
 
     def describe(self) -> dict:
+        keys = set(self.windows.astype(str))
+        for scoped in (self.scoped or {}).values():
+            keys.update(scoped.astype(str))
+        holiday_dates = self.holiday_dates
+        if holiday_dates is None or len(holiday_dates) == 0:
+            holiday_dates = self.dates
         return {
             "countries": list(self.countries),
             "window_days": int(self.window_days),
-            "n_holiday_dates": int(len(self.dates)),
+            "n_holiday_dates": int(len(holiday_dates)),
+            "n_dates": int(len(self.dates)),  # feriados + eventos
             "n_window_days": int(len(self.windows)),
-            "keys": sorted(set(self.windows.astype(str))),
+            "n_scoped_properties": int(len(self.scoped or {})),
+            "keys": sorted(keys),
         }
 
 
@@ -153,14 +189,104 @@ def build_holiday_calendar(
         {d: k for d, (_, k) in sorted(window_rows.items())}, dtype=object
     )
     windows.index.name = "date"
+    window_dists = pd.Series(
+        {d: dist for d, (dist, _) in sorted(window_rows.items())}, dtype="int64"
+    )
+    window_dists.index.name = "date"
     cal = HolidayCalendar(
         dates=dates,
         windows=windows,
         countries=countries,
         window_days=int(window_days),
+        holiday_dates=dates,  # sin eventos: todo es calendario público
+        window_dists=window_dists,
     )
     _CALENDAR_CACHE[key] = cal
     return cal
+
+
+def _expand_windows(
+    date: pd.Timestamp, key_sem: str, window_days: int,
+    window_rows: dict[pd.Timestamp, tuple[int, str]],
+) -> None:
+    """Añade la ventana ±window_days de una fecha, empate → la más cercana."""
+    for offset in range(-int(window_days), int(window_days) + 1):
+        wd = date + pd.Timedelta(days=offset)
+        dist = abs(offset)
+        current = window_rows.get(wd)
+        if current is None or dist < current[0]:
+            window_rows[wd] = (dist, key_sem)
+
+
+def calendar_with_events(
+    base: HolidayCalendar, events: pd.DataFrame, window_days: int | None = None
+) -> HolidayCalendar:
+    """Combina el calendario de feriados con los eventos privados.
+
+    Los eventos sin propiedad (o con ``property`` nula) generan ventanas
+    globales con clave = slug de su nombre; los eventos con propiedad
+    generan ventanas SOLO para esa propiedad (``scoped``). Las fechas de
+    todos los eventos entran a ``dates`` (feature de distancia ML);
+    ``holiday_dates`` conserva solo los feriados públicos.
+    """
+    if events is None or events.empty:
+        return base
+    wdays = int(window_days if window_days is not None else base.window_days)
+
+    dates = list(base.dates)
+    # preserva el mapa base con sus distancias REALES (empates por cercanía
+    # verdaderos: un evento más cercano puede reclamar una fecha de ventana
+    # de un feriado, y no al revés)
+    global_rows: dict[pd.Timestamp, tuple[int, str]] = {}
+    base_dists = base.window_dists
+    for d, k in base.windows.items():
+        dist = 0
+        if base_dists is not None:
+            got = base_dists.get(pd.Timestamp(d))
+            if got is not None and not pd.isna(got):
+                dist = int(got)
+        global_rows[pd.Timestamp(d)] = (dist, str(k))
+    scoped_rows: dict[str, dict[pd.Timestamp, tuple[int, str]]] = {}
+    for prop, series in (base.scoped or {}).items():
+        scoped_rows[str(prop)] = {
+            pd.Timestamp(d): (0, str(k)) for d, k in series.items()
+        }
+
+    for row in events.itertuples(index=False):
+        d = pd.Timestamp(row.event_date).normalize()
+        key_sem = _slugify(str(row.event_name))
+        dates.append(d)
+        prop = getattr(row, "property", None)
+        if prop is None or (isinstance(prop, float) and pd.isna(prop)) or str(prop) in ("", "nan", "None"):
+            _expand_windows(d, key_sem, wdays, global_rows)
+        else:
+            prop = str(prop)
+            scoped_rows.setdefault(prop, {})
+            _expand_windows(d, key_sem, wdays, scoped_rows[prop])
+
+    windows = pd.Series(
+        {d: k for d, (_, k) in sorted(global_rows.items())}, dtype=object
+    )
+    windows.index.name = "date"
+    window_dists = pd.Series(
+        {d: dist for d, (dist, _) in sorted(global_rows.items())}, dtype="int64"
+    )
+    window_dists.index.name = "date"
+    scoped = {
+        prop: pd.Series({d: k for d, (_, k) in sorted(rows.items())}, dtype=object)
+        for prop, rows in scoped_rows.items()
+        if rows
+    }
+    holiday_dates = base.holiday_dates if base.holiday_dates is not None else base.dates
+    return HolidayCalendar(
+        dates=pd.DatetimeIndex(sorted(set(dates))),
+        windows=windows,
+        countries=base.countries,
+        window_days=wdays,
+        holiday_dates=holiday_dates,
+        scoped=scoped or None,
+        window_dists=window_dists,
+    )
 
 
 def holiday_calendar_from_config(

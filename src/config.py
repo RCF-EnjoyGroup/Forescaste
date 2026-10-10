@@ -38,6 +38,7 @@ class EngineConfig:
     column_hints: dict[str, list[str]]
     property_aliases: dict[str, str] = field(default_factory=dict)
     excluded_properties: list[str] = field(default_factory=list)
+    events_path: str = "data/events.csv"
     pickup_curve: dict[str, Any] = field(default_factory=dict)
     holidays: dict[str, Any] = field(default_factory=dict)
     log_level: str = "INFO"
@@ -96,6 +97,7 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         str(k): str(v) for k, v in (data_cfg.get("property_aliases") or {}).items()
     }
     excluded = [str(p) for p in (data_cfg.get("excluded_properties") or [])]
+    events_path = str(data_cfg.get("events_path") or "data/events.csv")
     pickup_curve = {
         str(k): v
         for k, v in (data.get("pickup_curve") or {}).items()
@@ -127,6 +129,7 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         column_hints=hints,
         property_aliases=aliases,
         excluded_properties=excluded,
+        events_path=events_path,
         pickup_curve=pickup_curve,
         holidays=holidays_cfg,
         log_level=str(data.get("log_level", "INFO")),

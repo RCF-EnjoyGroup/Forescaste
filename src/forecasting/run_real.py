@@ -59,7 +59,12 @@ from src.forecasting.core import (
     predict_candidate,
 )
 from src.forecasting.runner import run_end_to_end
-from src.features.holidays import holiday_calendar_from_config
+from src.features.events import load_events
+from src.features.holidays import (
+    HolidayCalendar,
+    calendar_with_events,
+    holiday_calendar_from_config,
+)
 from src.models.baselines import PickupCurveModel
 
 FOLD_HORIZON = 30  # ventana de cada fold (días)
@@ -315,9 +320,20 @@ def main(argv: list[str] | None = None) -> int:
         min_year=int(pd.Timestamp(dem["stay_date"].min()).year),
         max_year=int(pd.Timestamp(dem["stay_date"].max()).year) + 1,
     )
+    events_df = load_events(cfg.events_path)
+    if events_df is not None:
+        base_cal = holiday_cal if holiday_cal is not None else HolidayCalendar(
+            dates=pd.DatetimeIndex([]), windows=pd.Series(dtype=object),
+            countries=(), window_days=int(dict(cfg.holidays).get("window_days", 4)),
+        )
+        holiday_cal = calendar_with_events(base_cal, events_df)
     if holiday_cal is not None:
-        print(f"      feriados: {holiday_cal.describe()['n_holiday_dates']} fechas "
-              f"{holiday_cal.describe()['countries']} (ventana ±{holiday_cal.window_days}d)")
+        desc = holiday_cal.describe()
+        print(f"      feriados/eventos: {desc['n_dates']} fechas "
+              f"({desc['n_holiday_dates']} feriados) {desc['countries']} "
+              f"(ventana ±{holiday_cal.window_days}d)")
+    if events_df is not None:
+        print(f"      eventos privados: {len(events_df)} cargados de '{cfg.events_path}'")
     folds, error_panel = real_fold_metrics(
         dem, pick, cutoff, curve_params=curve_params, holiday_calendar=holiday_cal
     )

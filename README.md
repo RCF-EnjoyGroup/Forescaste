@@ -175,6 +175,10 @@ openspec/                # specs, propuestas y changelog del proyecto
   la Madre…) con ventanas de viaje ±`window_days`; la curva de pickup gana un
   nivel de condicionamiento por ventana de feriado (con umbral propio y
   fallback) y los candidatos ML reciben `days_to_nearest_holiday`.
+- **Eventos privados opcionales** (`data/events.csv`, contrato en
+  README_SISTEMAS.md): conciertos/congresos/torneos con scoping por propiedad;
+  sin archivo el motor queda idéntico y el manifiesto declara la fuente
+  ausente.
 - **`final_forecast ≤ capacity`** en el 100% de los registros, **y también
   `p90 ≤ capacity`**: la banda de incertidumbre jamás publica valores
   físicamente imposibles.

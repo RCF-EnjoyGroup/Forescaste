@@ -47,7 +47,12 @@ from src.features.asof import AsOfBuilder, enforce_cutoff
 from src.features.calendar import add_calendar_features
 from src.features.capacity import add_capacity_features
 from src.features.demand import add_demand_features
-from src.features.holidays import holiday_calendar_from_config
+from src.features.events import load_events
+from src.features.holidays import (
+    HolidayCalendar,
+    calendar_with_events,
+    holiday_calendar_from_config,
+)
 from src.features.pickup import add_pickup_features
 from src.forecasting.constraints import (
     apply_capacity_constraint,
@@ -518,18 +523,35 @@ def run_end_to_end(
 
     horizon_days = int(config.forecast_horizon)
 
-    # ---------- 2b. calendario de feriados (exógeno, conocido a cualquier lead)
+    # ---------- 2b. calendario de feriados/eventos (exógeno, a cualquier lead)
+    events_df = load_events(config.events_path)
     holiday_cal = holiday_calendar_from_config(
         config,
         min_year=int(pd.Timestamp(history["stay_date"].min()).year),
         max_year=int((cutoff + pd.Timedelta(days=horizon_days)).year),
     )
+    if events_df is not None:
+        base_cal = holiday_cal if holiday_cal is not None else HolidayCalendar(
+            dates=pd.DatetimeIndex([]), windows=pd.Series(dtype=object),
+            countries=(), window_days=int(dict(config.holidays).get("window_days", 4)),
+        )
+        holiday_cal = calendar_with_events(base_cal, events_df)
+        print(
+            f"[eventos] {len(events_df)} eventos cargados de '{config.events_path}' "
+            f"({int(events_df['property'].notna().sum())} con propiedad asignada)"
+        )
 
     # ---------- 3. features as-of (sobre history, no sobre el futuro)
     df = history.copy()
+    # is_holiday: SOLO feriados del calendario público (nunca eventos privados)
+    is_holiday_dates = None
+    if holiday_cal is not None:
+        is_holiday_dates = holiday_cal.holiday_dates
+        if is_holiday_dates is None or len(is_holiday_dates) == 0:
+            is_holiday_dates = holiday_cal.dates
     df = add_calendar_features(
         df, "stay_date",
-        holidays=list(holiday_cal.dates) if holiday_cal is not None else None,
+        holidays=list(is_holiday_dates) if is_holiday_dates is not None else None,
     )
     df, missing_feats = add_demand_features(df)
 
@@ -848,6 +870,15 @@ def run_end_to_end(
             "capacity_usage": "horizon_cap_only",
             "excluded_properties": _jsonable(excluded_props_map),
             "holiday_calendar": _jsonable(holiday_cal.describe()) if holiday_cal is not None else None,
+            "events": (
+                {
+                    "source": str(config.events_path),
+                    "n_events": int(len(events_df)),
+                    "n_scoped": int(events_df["property"].notna().sum()),
+                }
+                if events_df is not None
+                else {"source": None}
+            ),
             "champion_reason": benchmark.selection.reason,
             "champion_significance": _jsonable(benchmark.selection.significance),
             "property_fallback": property_fallback,

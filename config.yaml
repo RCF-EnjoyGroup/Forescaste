@@ -42,6 +42,11 @@ data:
   # Propiedades CERRADAS: excluidas del motor completo (ingesta → entregables);
   # el manifiesto registra la exclusión. Nombre canónico (post-alias).
   excluded_properties: [LIRAK, LAPAS]
+  # Eventos privados OPCIONALES (conciertos, congresos, torneos): CSV con
+  # event_name, event_date y property opcional (blank = portafolio). Sin
+  # archivo el motor queda idéntico y el manifiesto declara la fuente
+  # ausente. Contrato de exportación en README_SISTEMAS.md.
+  events_path: data/events.csv
 
 # Curva de pickup (candidato operante): a leads largos el on-the-books cubre
 # poco, así que la curva se condiciona por la temporada de la fecha de estancia
