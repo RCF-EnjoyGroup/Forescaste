@@ -43,6 +43,7 @@ ML_FEATURES = [
     "rolling_mean_7", "rolling_mean_14", "rolling_mean_28", "rolling_std_28",
     "day_of_week", "is_weekend", "month", "quarter",
     "current_booked_rn",
+    "days_to_nearest_holiday",
 ]
 STATS_TAIL_DAYS = 1095  # cola de entrenamiento ETS/SARIMAX (guard de costo)
 ML_PANEL_MAX_STAYS = 365  # panel ML: últimas estancias con target observable
@@ -200,11 +201,19 @@ def _daily_values(dem_p: pd.DataFrame, c: pd.Timestamp) -> tuple[pd.DatetimeInde
     return grid, s.reindex(grid).to_numpy(dtype=float)
 
 
-def _ml_row(vals: np.ndarray, t: int, d: pd.Timestamp, booked: float) -> dict[str, float]:
+def _ml_row(
+    vals: np.ndarray,
+    t: int,
+    d: pd.Timestamp,
+    booked: float,
+    holiday_calendar: Any = None,
+) -> dict[str, float]:
     """Features as-of del índice ``t`` del grid diario (ventana [t-w, t-1]).
 
     El target de la propia fila JAMÁS entra a sus features: los rollings
     excluyen ``vals[t]`` (equivalente a ``shift(1)`` antes de la ventana).
+    ``days_to_nearest_holiday`` es exógena y conocida a cualquier lead
+    (feriados computados por calendario, no observados).
     """
     def lag(k: int) -> float:
         return float(vals[t - k]) if t - k >= 0 else float("nan")
@@ -237,6 +246,10 @@ def _ml_row(vals: np.ndarray, t: int, d: pd.Timestamp, booked: float) -> dict[st
         "month": float(d.month),
         "quarter": float((d.month - 1) // 3 + 1),
         "current_booked_rn": float(booked),
+        "days_to_nearest_holiday": (
+            holiday_calendar.days_to_nearest(d) if holiday_calendar is not None
+            else float("nan")
+        ),
     }
 
 
@@ -290,6 +303,7 @@ class FittedCandidate:
     level: float = 0.0  # cold start: nivel medio histórico
     grid: pd.DatetimeIndex | None = None
     vals: np.ndarray | None = None
+    holiday_calendar: Any = None  # features.holidays.HolidayCalendar (ML)
 
     def cold_start(self) -> bool:
         return self.artifact is None
@@ -302,6 +316,7 @@ def _fit_pickup(
     horizon: int,
     prop: str,
     curve_params: dict | None = None,
+    holiday_calendar: Any = None,
 ) -> FittedCandidate:
     hist = dem_p.loc[dem_p["stay_date"] <= c]
     pkf = pick_p.loc[pick_p["snapshot_date"] <= c]
@@ -315,7 +330,9 @@ def _fit_pickup(
     )
     if curves.empty:
         return fitted
-    fitted.artifact = PickupCurveModel(**(curve_params or {})).fit(curves)
+    fitted.artifact = PickupCurveModel(
+        **(curve_params or {}), holiday_calendar=holiday_calendar
+    ).fit(curves)
     return fitted
 
 
@@ -339,11 +356,13 @@ def _fit_stats(
 def _fit_ml(
     factory, dem_p: pd.DataFrame, pick_p: pd.DataFrame,
     c: pd.Timestamp, horizon: int, prop: str, model_name: str,
+    holiday_calendar: Any = None,
 ) -> FittedCandidate:
     grid, vals = _daily_values(dem_p, c)
     fitted = FittedCandidate(
         model_name=model_name, property=prop, fit_cutoff=c,
         horizon=horizon, kind="ml", grid=grid, vals=vals,
+        holiday_calendar=holiday_calendar,
     )
     panel = _booked_training_panel(pick_p, dem_p, c, horizon)
     pos = {d: i for i, d in enumerate(grid)}
@@ -353,7 +372,7 @@ def _fit_ml(
             t = pos.get(pd.Timestamp(stay))
             if t is None or np.isnan(vals[t]):
                 continue
-            row = _ml_row(vals, t, pd.Timestamp(stay), float(booked))
+            row = _ml_row(vals, t, pd.Timestamp(stay), float(booked), holiday_calendar)
             row["room_nights"] = float(vals[t])
             train_rows.append(row)
     if len(train_rows) < ML_MIN_TRAIN_OBS:
@@ -373,16 +392,20 @@ def fit_candidate(
     c: pd.Timestamp,
     horizon: int,
     curve_params: dict | None = None,
+    holiday_calendar: Any = None,
 ) -> FittedCandidate:
     """Entrena UN candidato para UNA propiedad con datos ≤ corte.
 
     ``curve_params`` configura la curva de pickup (temporada del stay,
     ventana de recencia, umbral de fallback) desde el ``config.yaml``.
+    ``holiday_calendar`` (primitiva compartida de ``features.holidays``)
+    activa el condicionamiento por ventana de feriado en la curva y la
+    feature ``days_to_nearest_holiday`` en los candidatos ML.
     """
     c = pd.Timestamp(c)
     prop = str(dem_p["property"].iloc[0]) if len(dem_p) else PORTFOLIO
     if model_name == "pickup_curve":
-        return _fit_pickup(dem_p, pick_p, c, horizon, prop, curve_params)
+        return _fit_pickup(dem_p, pick_p, c, horizon, prop, curve_params, holiday_calendar)
     if model_name == "seasonal_naive":
         hist = dem_p.loc[dem_p["stay_date"] <= c]
         fitted = FittedCandidate(
@@ -400,7 +423,8 @@ def fit_candidate(
         return _fit_stats("sarimax", SARIMAXModel, dem_p, c, horizon, prop)
     if model_name in ML_FACTORIES:
         return _fit_ml(
-            ML_FACTORIES[model_name], dem_p, pick_p, c, horizon, prop, model_name
+            ML_FACTORIES[model_name], dem_p, pick_p, c, horizon, prop, model_name,
+            holiday_calendar,
         )
     raise ValueError(f"candidato desconocido: '{model_name}'")
 
@@ -462,7 +486,8 @@ def predict_candidate(
         preds: list[float] = []
         for j, d in enumerate(dates):
             t = base + j
-            row = _ml_row(ext_vals, t, d, float(booked.iloc[j]) if pd.notna(booked.iloc[j]) else float("nan"))
+            booked_j = float(booked.iloc[j]) if pd.notna(booked.iloc[j]) else float("nan")
+            row = _ml_row(ext_vals, t, d, booked_j, fitted.holiday_calendar)
             yhat = max(float(fitted.artifact.predict(pd.DataFrame([row]))[0]), 0.0)
             preds.append(yhat)
             ext_vals[t] = yhat
@@ -489,6 +514,7 @@ def build_forecasts(
     cutoff: pd.Timestamp,
     horizon_days: int,
     curve_params: dict | None = None,
+    holiday_calendar: Any = None,
 ) -> tuple[pd.DataFrame, dict[str, FittedCandidate]]:
     """Despacha el forecast del horizonte con el modelo ganador por propiedad.
 
@@ -509,7 +535,9 @@ def build_forecasts(
         model_name = model_by_property[prop]
         dem_p = dem.loc[dem["property"] == prop]
         pick_p = pick.loc[pick["property"] == prop]
-        fitted = fit_candidate(model_name, dem_p, pick_p, cutoff, horizon_days, curve_params)
+        fitted = fit_candidate(
+            model_name, dem_p, pick_p, cutoff, horizon_days, curve_params, holiday_calendar
+        )
         fitted_by_property[prop] = fitted
         pred = predict_candidate(fitted, pick_p, horizon_dates)
         pred["property"] = prop

@@ -39,6 +39,7 @@ class EngineConfig:
     property_aliases: dict[str, str] = field(default_factory=dict)
     excluded_properties: list[str] = field(default_factory=list)
     pickup_curve: dict[str, Any] = field(default_factory=dict)
+    holidays: dict[str, Any] = field(default_factory=dict)
     log_level: str = "INFO"
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -99,15 +100,26 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         str(k): v
         for k, v in (data.get("pickup_curve") or {}).items()
         if k in (
-            "season_conditional", "max_history_days", "min_stays_per_bucket",
+            "season_conditional", "holiday_conditional", "max_history_days",
+            "min_stays_per_bucket", "min_stays_per_holiday_bucket",
             "season_min_lead", "n_bins",
         )
     }
     if "season_conditional" in pickup_curve:
         pickup_curve["season_conditional"] = bool(pickup_curve["season_conditional"])
-    for int_key in ("max_history_days", "min_stays_per_bucket", "season_min_lead", "n_bins"):
+    if "holiday_conditional" in pickup_curve:
+        pickup_curve["holiday_conditional"] = bool(pickup_curve["holiday_conditional"])
+    for int_key in (
+        "max_history_days", "min_stays_per_bucket", "min_stays_per_holiday_bucket",
+        "season_min_lead", "n_bins",
+    ):
         if int_key in pickup_curve and pickup_curve[int_key] is not None:
             pickup_curve[int_key] = int(pickup_curve[int_key])
+
+    holidays_cfg = {
+        "countries": [str(c).upper() for c in (data.get("holidays") or {}).get("countries") or []],
+        "window_days": int((data.get("holidays") or {}).get("window_days", 4)),
+    }
 
     return EngineConfig(
         **values,
@@ -116,6 +128,7 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         property_aliases=aliases,
         excluded_properties=excluded,
         pickup_curve=pickup_curve,
+        holidays=holidays_cfg,
         log_level=str(data.get("log_level", "INFO")),
         raw=data,
     )

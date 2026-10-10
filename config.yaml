@@ -54,3 +54,16 @@ pickup_curve:
   season_min_lead: 30         # la curva estacional aplica solo a leads ≥ 30
   max_history_days: 1095      # ventana de recencia del fit (3 años)
   min_stays_per_bucket: 30    # menos estancias ⇒ fallback a la curva de propiedad
+  holiday_conditional: true   # nivel extra: curva por (propiedad, ventana de feriado)
+  min_stays_per_holiday_bucket: 15  # umbral propio: las ventanas de feriado son
+                                    # ~9 días (vs meses de una temporada); con el
+                                    # umbral de temporadas (30) serían inalcanzables
+
+# Calendario de feriados (fuente confiable: librería `holidays`): CR (Semana
+# Santa, Anexión, Día de la Madre, Independencia…) + mercados emisores US
+# (Thanksgiving, Memorial, Labor Day, 4 de julio). Fechas movibles resueltas
+# correctamente; ventanas de viaje ± window_days para el condicionamiento
+# de la curva y `is_holiday`/`days_to_nearest_holiday` para los candidatos ML.
+holidays:
+  countries: [CR, US]
+  window_days: 4

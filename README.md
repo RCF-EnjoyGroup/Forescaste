@@ -170,6 +170,11 @@ openspec/                # specs, propuestas y changelog del proyecto
   (30) la curva se condiciona por la temporada de la fecha de estancia — el
   forecast a largo plazo converge al nivel estacional del stay; a leads
   cortos se preserva el pooling por propiedad. Defaults validados con A/B.
+- **Feriados CR + US como señal de largo plazo**: calendario confiable
+  (librería `holidays`: Semana Santa movible, Thanksgiving, Memorial, Día de
+  la Madre…) con ventanas de viaje ±`window_days`; la curva de pickup gana un
+  nivel de condicionamiento por ventana de feriado (con umbral propio y
+  fallback) y los candidatos ML reciben `days_to_nearest_holiday`.
 - **`final_forecast ≤ capacity`** en el 100% de los registros, **y también
   `p90 ≤ capacity`**: la banda de incertidumbre jamás publica valores
   físicamente imposibles.

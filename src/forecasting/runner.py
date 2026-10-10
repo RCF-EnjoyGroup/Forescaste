@@ -47,6 +47,7 @@ from src.features.asof import AsOfBuilder, enforce_cutoff
 from src.features.calendar import add_calendar_features
 from src.features.capacity import add_capacity_features
 from src.features.demand import add_demand_features
+from src.features.holidays import holiday_calendar_from_config
 from src.features.pickup import add_pickup_features
 from src.forecasting.constraints import (
     apply_capacity_constraint,
@@ -189,6 +190,7 @@ def _sampled_backtest(
     cutoff: pd.Timestamp,
     backtest_cfg: dict | None = None,
     curve_params: dict | None = None,
+    holiday_calendar: Any = None,
 ) -> tuple[dict, dict[str, pd.Series], pd.Series]:
     """Snapshots T-90..T-1 por propiedad con el campeón que opera.
 
@@ -236,7 +238,9 @@ def _sampled_backtest(
             _model=model_name, _pick=pick_p, _dem=dem_p, _prop=prop,
         ) -> dict:
             fc_date = pd.Timestamp(stay) - pd.Timedelta(days=int(lead))
-            fitted = fit_candidate(_model, _dem, _pick, fc_date, int(lead), curve_params)
+            fitted = fit_candidate(
+                _model, _dem, _pick, fc_date, int(lead), curve_params, holiday_calendar
+            )
             pred = predict_candidate(fitted, _pick, pd.DatetimeIndex([pd.Timestamp(stay)]))
             r = pred.iloc[0]
             booked = r.get("current_booked_rn")
@@ -514,9 +518,19 @@ def run_end_to_end(
 
     horizon_days = int(config.forecast_horizon)
 
+    # ---------- 2b. calendario de feriados (exógeno, conocido a cualquier lead)
+    holiday_cal = holiday_calendar_from_config(
+        config,
+        min_year=int(pd.Timestamp(history["stay_date"].min()).year),
+        max_year=int((cutoff + pd.Timedelta(days=horizon_days)).year),
+    )
+
     # ---------- 3. features as-of (sobre history, no sobre el futuro)
     df = history.copy()
-    df = add_calendar_features(df, "stay_date")
+    df = add_calendar_features(
+        df, "stay_date",
+        holidays=list(holiday_cal.dates) if holiday_cal is not None else None,
+    )
     df, missing_feats = add_demand_features(df)
 
     # booked as-of por estancia (snapshot más reciente) → features de
@@ -612,7 +626,8 @@ def run_end_to_end(
     # ---------- 5. forecast del horizonte con el campeón (por propiedad)
     curve_params = dict(config.pickup_curve)
     raw, fitted_models = build_forecasts(
-        model_by_property, history, pick, cutoff, horizon_days, curve_params
+        model_by_property, history, pick, cutoff, horizon_days,
+        curve_params, holiday_cal,
     )
 
     # ---------- 6. capacidad + ocupación (por fecha; fallback mediana → 100)
@@ -629,7 +644,7 @@ def run_end_to_end(
 
     # ---------- 7. backtest T-90..T-1 muestreado (residuos por lead band)
     backtest_report, residual_bands, residuals_flat = _sampled_backtest(
-        history, pick, model_by_property, cutoff, backtest_cfg, curve_params
+        history, pick, model_by_property, cutoff, backtest_cfg, curve_params, holiday_cal
     )
 
     # ---------- 8. intervalos P10/P50/P90 anclados al punto publicado
@@ -812,6 +827,9 @@ def run_end_to_end(
             "per_property": model_by_property,
             "horizon_days": horizon_days,
             "pickup_curve": _jsonable(curve_params),
+            "holidays": _jsonable(
+                dict(config.holidays) if holiday_cal is not None else {"countries": []}
+            ),
         },
         metrics=_jsonable(metrics) if metrics else {"placeholder": 0.0},
         seed=int(config.random_seed),
@@ -829,6 +847,7 @@ def run_end_to_end(
             },
             "capacity_usage": "horizon_cap_only",
             "excluded_properties": _jsonable(excluded_props_map),
+            "holiday_calendar": _jsonable(holiday_cal.describe()) if holiday_cal is not None else None,
             "champion_reason": benchmark.selection.reason,
             "champion_significance": _jsonable(benchmark.selection.significance),
             "property_fallback": property_fallback,
@@ -879,6 +898,12 @@ def run_end_to_end(
             interval_source=interval_source,
             excluded_props_map=excluded_props_map,
             curve_params=curve_params,
+            holiday_calendar_md=(
+                f"{holiday_cal.describe()['n_holiday_dates']} fechas "
+                f"{'+'.join(holiday_cal.countries)} (ventana ±{holiday_cal.window_days}d)"
+                if holiday_cal is not None
+                else None
+            ),
         ),
     )
 
@@ -988,6 +1013,7 @@ def _technical_doc(
     interval_source: str = "real_backtest",
     excluded_props_map: dict[str, str] | None = None,
     curve_params: dict | None = None,
+    holiday_calendar_md: str | None = None,
 ) -> str:
     disclaimer = (
         "> ⚠️ **DISCLAIMER**: corrida ejecutada con datos de MUESTRA en el esquema real "
@@ -1020,6 +1046,13 @@ def _technical_doc(
         if curve_params
         else "parámetros por defecto"
     )
+    if holiday_calendar_md is not None:
+        curve_md += f"; feriados: {holiday_calendar_md}"
+    if curve_params:
+        curve_md += (
+            f"; condicionamiento por ventana de feriado "
+            f"({'activado' if curve_params.get('holiday_conditional') else 'desactivado'})"
+        )
     bench_note = (
         "backtest real por propiedad (folds trimestrales, sin solape con la ventana de reporte)"
         if benchmark_source == "real_backtest"

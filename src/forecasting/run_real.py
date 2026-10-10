@@ -59,6 +59,7 @@ from src.forecasting.core import (
     predict_candidate,
 )
 from src.forecasting.runner import run_end_to_end
+from src.features.holidays import holiday_calendar_from_config
 from src.models.baselines import PickupCurveModel
 
 FOLD_HORIZON = 30  # ventana de cada fold (días)
@@ -111,6 +112,7 @@ def real_fold_metrics(
     dem: pd.DataFrame, pick: pd.DataFrame, cutoff: pd.Timestamp,
     horizon: int = FOLD_HORIZON, n_folds: int = 4,
     curve_params: dict | None = None,
+    holiday_calendar=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Métricas out-of-sample REALES de los 7 candidatos, por propiedad.
 
@@ -160,7 +162,9 @@ def real_fold_metrics(
                 continue
             preds: dict[str, pd.Series] = {}
             for model in CANDIDATE_MODELS:
-                fitted = fit_candidate(model, dem_p, pick_p, c, horizon, curve_params)
+                fitted = fit_candidate(
+                    model, dem_p, pick_p, c, horizon, curve_params, holiday_calendar
+                )
                 pred = predict_candidate(fitted, pick_p, dates)
                 preds[model] = pred.set_index("stay_date")["raw_forecast_rn"]
             per_prop[p] = preds
@@ -306,7 +310,17 @@ def main(argv: list[str] | None = None) -> int:
 
     print("[2/5] Benchmark real (folds trimestrales × 30d, 7 candidatos, por propiedad)...")
     curve_params = dict(cfg.pickup_curve)
-    folds, error_panel = real_fold_metrics(dem, pick, cutoff, curve_params=curve_params)
+    holiday_cal = holiday_calendar_from_config(
+        cfg,
+        min_year=int(pd.Timestamp(dem["stay_date"].min()).year),
+        max_year=int(pd.Timestamp(dem["stay_date"].max()).year) + 1,
+    )
+    if holiday_cal is not None:
+        print(f"      feriados: {holiday_cal.describe()['n_holiday_dates']} fechas "
+              f"{holiday_cal.describe()['countries']} (ventana ±{holiday_cal.window_days}d)")
+    folds, error_panel = real_fold_metrics(
+        dem, pick, cutoff, curve_params=curve_params, holiday_calendar=holiday_cal
+    )
     if folds.empty:
         print("ERROR: el benchmark no produjo evaluaciones (¿histórico insuficiente?).", file=sys.stderr)
         return 1

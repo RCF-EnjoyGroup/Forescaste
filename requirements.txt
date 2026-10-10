@@ -22,5 +22,8 @@ shap>=0.44
 # Reporte visual HTML por corrida (reporting/visual_report.py)
 matplotlib>=3.7
 
+# Calendario de feriados CR + mercados emisores (features/holidays.py)
+holidays>=0.40
+
 # Tests
 pytest>=7.4
