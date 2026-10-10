@@ -32,6 +32,10 @@ data:
     date: [date, stay_date, business_date, fecha, day]
     capacity: [capacity, available_rooms, inventory, rooms_available, oficial_inventory]
     demand: [room_nights, rooms_sold, rn, demand, actual_rn, actual]
-    pickup: [pickup, pickup_rn, booked_rn, current_rn, on_books]
+    pickup: [pickup, pickup_rn, booked_rn, current_rn, on_books, rooms_booked]
     snapshot: [snapshot_date, snap_date, forecast_date, as_of]
     lead: [lead_days, lead, anticipation_days, dias_anticipacion]
+  # Alias de propiedad: nombres distintos entre fuentes que designan el MISMO
+  # hotel (spec data-ingestion: normalización antes de cruzar fuentes).
+  property_aliases:
+    "Hotel Royal Corin": CORIN

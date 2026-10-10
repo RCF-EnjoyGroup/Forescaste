@@ -19,5 +19,8 @@ catboost>=1.2
 # Explicabilidad (spec explainability)
 shap>=0.44
 
+# Reporte visual HTML por corrida (reporting/visual_report.py)
+matplotlib>=3.7
+
 # Tests
 pytest>=7.4

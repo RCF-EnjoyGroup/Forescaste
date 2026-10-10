@@ -14,67 +14,69 @@
 
 ## 3. Anti-leakage (spec leakage-prevention)
 
-- [ ] 3.1 Implementar el as-of snapshot builder como primitiva única de features y verificar con un test que para un corte T ninguna feature proviene de datos > T
-- [ ] 3.2 Implementar lags/rollings/expansivos solo hacia atrás y verificar con un test que una ventana rolling de 28 días excluye cualquier observación futura
-- [ ] 3.3 Implementar la validación que prohíbe splits aleatorios y verificar con un test que una configuración con split mixto falla antes de entrenar
-- [ ] 3.4 Implementar el suite de pruebas de leakage (RN futuros, pickup futuro, capacidad futura, features con dataset completo, rolling con futuro, split aleatorio) y verificar que inyectar leakage deliberado hace fallar la corrida y no publica forecast
+- [x] 3.1 Implementar el as-of snapshot builder como primitiva única de features y verificar con un test que para un corte T ninguna feature proviene de datos > T
+- [x] 3.2 Implementar lags/rollings/expansivos solo hacia atrás y verificar con un test que una ventana rolling de 28 días excluye cualquier observación futura
+- [x] 3.3 Implementar la validación que prohíbe splits aleatorios y verificar con un test que una configuración con split mixto falla antes de entrenar
+- [x] 3.4 Implementar el suite de pruebas de leakage (RN futuros, pickup futuro, capacidad futura, features con dataset completo, rolling con futuro, split aleatorio) y verificar que inyectar leakage deliberado hace fallar la corrida y no publica forecast
 
 ## 4. Feature engineering (spec feature-engineering)
 
-- [ ] 4.1 Implementar features de calendario (dow, weekend, semana, mes, trimestre, año, día, fin de mes, feriado si existe fuente, temporada) y verificar con tests que se derivan solo de la fecha de estancia en el horizonte futuro
-- [ ] 4.2 Implementar features de demanda histórica (lags 1/7/14/28/365, rolling 7/14/28/56, mediana, desviación, mismo dow, mismo mes) y verificar con tests el orden temporal y el manejo de histórico insuficiente (<1 año omite lag 365)
-- [ ] 4.3 Implementar features de capacidad (diaria, día anterior, cambio, rolling, utilización, restante) y verificar con tests sus valores en un dataset con cambio de inventario
-- [ ] 4.4 Implementar features de pickup (reserved actuales, lead days, ventanas 1/3/7/14/30, stats al mismo lead, volatilidad, aceleración/desaceleración, acumulado, % de demanda final) y verificar con tests la fórmula de aceleración y el as-of de "pickup al mismo lead"
-- [ ] 4.5 Verificar con una prueba de correlación en datos de muestra que las features de pickup/capacidad aportan señal (sin fugas) antes de pasar a modelado
+- [x] 4.1 Implementar features de calendario (dow, weekend, semana, mes, trimestre, año, día, fin de mes, feriado si existe fuente, temporada) y verificar con tests que se derivan solo de la fecha de estancia en el horizonte futuro
+- [x] 4.2 Implementar features de demanda histórica (lags 1/7/14/28/365, rolling 7/14/28/56, mediana, desviación, mismo dow, mismo mes) y verificar con tests el orden temporal y el manejo de histórico insuficiente (<1 año omite lag 365)
+- [x] 4.3 Implementar features de capacidad (diaria, día anterior, cambio, rolling, utilización, restante) y verificar con tests sus valores en un dataset con cambio de inventario
+- [x] 4.4 Implementar features de pickup (reserved actuales, lead days, ventanas 1/3/7/14/30, stats al mismo lead, volatilidad, aceleración/desaceleración, acumulado, % de demanda final) y verificar con tests la fórmula de aceleración y el as-of de "pickup al mismo lead"
+- [x] 4.5 Verificar con una prueba de correlación en datos de muestra que las features de pickup/capacidad aportan señal (sin fugas) antes de pasar a modelado
 
 ## 5. Modelado (spec forecasting)
 
-- [ ] 5.1 Implementar el baseline Seasonal Naive (mismo día de semana histórico) y verificar con un test que produce forecast por propiedad/fecha
-- [ ] 5.2 Implementar el baseline Pickup Curve (`Current Bookings + f(lead)` no lineal) y verificar con un test que la trayectoria T-90→T-1 es decreciente en pickup conforme baja el lead
-- [ ] 5.3 Implementar los candidatos ETS y SARIMAX con la config de la sección de modelos y verificar que cada uno ajusta y predice en una serie sintética estacional
-- [ ] 5.4 Implementar los candidatos ML LightGBM, XGBoost y CatBoost con features as-of y verificación temprana y verificar que cada uno entrena y produce predicciones en dataset de prueba
-- [ ] 5.5 Implementar la capa de restricción de capacidad (`final = min(raw, capacity)`) y verificar con tests que nunca se excede la capacidad, que se conservan `raw/capacity/final` por separado y que se emite la alerta de violación
-- [ ] 5.6 Implementar la ocupación implícita con validación 0–100% y verificar con un test que los valores fuera de rango se detectan
-- [ ] 5.7 Implementar la jerarquía propiedad/portafolio con reconciliación y verificar con un test que la suma de propiedades se compara contra el portafolio y la brecha se reporta
-- [ ] 5.8 Implementar intervalos P10/P50/P90 (nativos o conformal según D7) y verificar con un test que p10 ≤ p50 ≤ p90 en todos los registros y que los modelos sin intervalo quedan marcados
+- [x] 5.1 Implementar el baseline Seasonal Naive (mismo día de semana histórico) y verificar con un test que produce forecast por propiedad/fecha
+- [x] 5.2 Implementar el baseline Pickup Curve (`Current Bookings + f(lead)` no lineal) y verificar con un test que la trayectoria T-90→T-1 es decreciente en pickup conforme baja el lead
+- [x] 5.3 Implementar los candidatos ETS y SARIMAX con la config de la sección de modelos y verificar que cada uno ajusta y predice en una serie sintética estacional
+- [x] 5.4 Implementar los candidatos ML LightGBM, XGBoost y CatBoost con features as-of y verificación temprana y verificar que cada uno entrena y produce predicciones en dataset de prueba
+- [x] 5.5 Implementar la capa de restricción de capacidad (`final = min(raw, capacity)`) y verificar con tests que nunca se excede la capacidad, que se conservan `raw/capacity/final` por separado y que se emite la alerta de violación
+- [x] 5.6 Implementar la ocupación implícita con validación 0–100% y verificar con un test que los valores fuera de rango se detectan
+- [x] 5.7 Implementar la jerarquía propiedad/portafolio con reconciliación y verificar con un test que la suma de propiedades se compara contra el portafolio y la brecha se reporta
+- [x] 5.8 Implementar intervalos P10/P50/P90 (nativos o conformal según D7) y verificar con un test que p10 ≤ p50 ≤ p90 en todos los registros y que los modelos sin intervalo quedan marcados
 
 ## 6. Evaluación (spec evaluation)
 
-- [ ] 6.1 Implementar la validación rolling/expanding estrictamente temporal y verificar con un test que cada ventana entrena solo con datos anteriores
-- [ ] 6.2 Implementar el cálculo de MAPE, WMAPE, MAE, RMSE y Bias y verificar con tests contra valores calculados a mano en un dataset pequeño
-- [ ] 6.3 Implementar el manejo de `Actual = 0` en MAPE (exclusión + conteo documentado) y verificar con un test que las observaciones cero se excluyen, se cuentan y MAE/WMAPE las incluyen
-- [ ] 6.4 Implementar los desgloses por banda de lead (90+, 60–89, 30–59, 14–29, 7–13, 3–6, 1–2) y verificar con un test que cada observación cae en exactamente una banda con sus métricas
-- [ ] 6.5 Implementar los desgloses por propiedad y por estacionalidad (mes, dow, weekend, temporadas) y verificar con tests que producen las tablas completas y detectan un patrón de sesgo inyectado
-- [ ] 6.6 Implementar la evaluación multi-step con snapshots congelados y verificar con un test que un forecast de corte T no lee ningún dato > T
-- [ ] 6.7 Implementar la selección de campeón (WMAPE, MAE, |Bias|, estabilidad entre ventanas; MAPE no decide) y verificar con un test que un modelo con mejor MAPE pero bias fuerte no gana
-- [ ] 6.8 Implementar la selección por propiedad con mínimo de ventanas y fallback a selección global y verificar con un test que las propiedades sin evidencia suficiente caen al modelo global
+- [x] 6.1 Implementar la validación rolling/expanding estrictamente temporal y verificar con un test que cada ventana entrena solo con datos anteriores
+- [x] 6.2 Implementar el cálculo de MAPE, WMAPE, MAE, RMSE y Bias y verificar con tests contra valores calculados a mano en un dataset pequeño
+- [x] 6.3 Implementar el manejo de `Actual = 0` en MAPE (exclusión + conteo documentado) y verificar con un test que las observaciones cero se excluyen, se cuentan y MAE/WMAPE las incluyen
+- [x] 6.4 Implementar los desgloses por banda de lead (90+, 60–89, 30–59, 14–29, 7–13, 3–6, 1–2) y verificar con un test que cada observación cae en exactamente una banda con sus métricas
+- [x] 6.5 Implementar los desgloses por propiedad y por estacionalidad (mes, dow, weekend, temporadas) y verificar con tests que producen las tablas completas y detectan un patrón de sesgo inyectado
+- [x] 6.6 Implementar la evaluación multi-step con snapshots congelados y verificar con un test que un forecast de corte T no lee ningún dato > T
+- [x] 6.7 Implementar la selección de campeón (WMAPE, MAE, |Bias|, estabilidad entre ventanas; MAPE no decide) y verificar con un test que un modelo con mejor MAPE pero bias fuerte no gana
+- [x] 6.8 Implementar la selección por propiedad con mínimo de ventanas y fallback a selección global y verificar con un test que las propiedades sin evidencia suficiente caen al modelo global
 
 ## 7. Backtesting y revisiones (spec backtesting)
 
-- [ ] 7.1 Implementar el backtester de snapshots en leads 90/60/30/14/7/3/1 con datasets por corte cacheados y verificar con un test que un snapshot histórico no contiene datos posteriores a su corte
-- [ ] 7.2 Implementar el almacenamiento de revisiones (forecast_date, lead_days por stay date) y verificar con un test que la serie T-90 → T-1 → Actual es reconstruible
-- [ ] 7.3 Implementar el reporte de métricas del backtest (globales + por banda de lead) y verificar con un test que las métricas se calculan sobre los snapshots simulados
+- [x] 7.1 Implementar el backtester de snapshots en leads 90/60/30/14/7/3/1 con datasets por corte cacheados y verificar con un test que un snapshot histórico no contiene datos posteriores a su corte
+- [x] 7.2 Implementar el almacenamiento de revisiones (forecast_date, lead_days por stay date) y verificar con un test que la serie T-90 → T-1 → Actual es reconstruible
+- [x] 7.3 Implementar el reporte de métricas del backtest (globales + por banda de lead) y verificar con un test que las métricas se calculan sobre los snapshots simulados
 
 ## 8. Explicabilidad (spec explainability)
 
-- [ ] 8.1 Implementar explicaciones por predicción y globales para los modelos ML (SHAP/importancia) y verificar con un test que una corrida ML produce explicaciones pobladas
-- [ ] 8.2 Implementar la contribución explícita de la restricción de capacidad en la explicación y verificar con un test que cuando hay cap aparece como contribución negativa
-- [ ] 8.3 Implementar la versión de negocio de los drivers (reservas, pickup, estacionalidad, capacidad) y verificar con un test que la explicación incluye el resumen legible y que las contribuciones suman el forecast reportado
+- [x] 8.1 Implementar explicaciones por predicción y globales para los modelos ML (SHAP/importancia) y verificar con un test que una corrida ML produce explicaciones pobladas
+- [x] 8.2 Implementar la contribución explícita de la restricción de capacidad en la explicación y verificar con un test que cuando hay cap aparece como contribución negativa
+- [x] 8.3 Implementar la versión de negocio de los drivers (reservas, pickup, estacionalidad, capacidad) y verificar con un test que la explicación incluye el resumen legible y que las contribuciones suman el forecast reportado
 
 ## 9. Reporting y entregables (spec reporting)
 
-- [ ] 9.1 Implementar la tabla final de forecast con las columnas obligatorias del spec y verificar con un test que todas las columnas existen y están pobladas
-- [ ] 9.2 Implementar las columnas extendidas (`historical_same_day_rn`, `expected_pickup_rn`, `pickup_rate`, `forecast_occupancy`, `forecast_bias`, `confidence_level`) cuando la información lo permite y verificar con un test su presencia/ausencia según disponibilidad
-- [ ] 9.3 Implementar el dataset Power BI (tablas forecast/accuracy/pickup/modelo con Variance y Variance %) y verificar con un test que cada área del dashboard tiene sus campos cargables
-- [ ] 9.4 Implementar los 7 KPIs ejecutivos y verificar con un test que los siete quedan calculados en una corrida de prueba
-- [ ] 9.5 Implementar el Model Benchmark con los 7 candidatos (MAPE, WMAPE, MAE, RMSE, Bias, estabilidad) y verificar con una corrida de benchmark que la tabla tiene fila por candidato y campeón declarado con evidencia out-of-sample
-- [ ] 9.6 Implementar la generación de los reportes restantes (Data Quality, EDA, Feature Engineering, Backtesting, Forecast Accuracy, Explainability, documentación técnica con limitaciones) y verificar que los 10 entregables se producen en una corrida completa
-- [ ] 9.7 Verificar el estándar de ingeniería: la lógica vive en `src/`, los notebooks solo importan y presentan (revisión de estructura + suite de tests en verde)
+- [x] 9.1 Implementar la tabla final de forecast con las columnas obligatorias del spec y verificar con un test que todas las columnas existen y están pobladas
+- [x] 9.2 Implementar las columnas extendidas (`historical_same_day_rn`, `expected_pickup_rn`, `pickup_rate`, `forecast_occupancy`, `forecast_bias`, `confidence_level`) cuando la información lo permite y verificar con un test su presencia/ausencia según disponibilidad
+- [x] 9.3 Implementar el dataset Power BI (tablas forecast/accuracy/pickup/modelo con Variance y Variance %) y verificar con un test que cada área del dashboard tiene sus campos cargables
+- [x] 9.4 Implementar los 7 KPIs ejecutivos y verificar con un test que los siete quedan calculados en una corrida de prueba
+- [x] 9.5 Implementar el Model Benchmark con los 7 candidatos (MAPE, WMAPE, MAE, RMSE, Bias, estabilidad) y verificar con una corrida de benchmark que la tabla tiene fila por candidato y campeón declarado con evidencia out-of-sample
+- [x] 9.6 Implementar la generación de los reportes restantes (Data Quality, EDA, Feature Engineering, Backtesting, Forecast Accuracy, Explainability, documentación técnica con limitaciones) y verificar que los 10 entregables se producen en una corrida completa
+- [x] 9.7 Verificar el estándar de ingeniería: la lógica vive en `src/`, los notebooks solo importan y presentan (revisión de estructura + suite de tests en verde)
 
 ## 10. Monitoring y retraining (spec monitoring)
 
-- [ ] 10.1 Implementar la detección de drift de MAPE/WMAPE/Bias y verificar con un test que un deterioro inyectado genera alerta con métrica y magnitud
-- [ ] 10.2 Implementar el drift de features, curva de pickup y distribución de demanda y verificar con tests que un desplazamiento inyectado se reporta
-- [ ] 10.3 Implementar la detección de outliers con clasificación sin eliminación automática y verificar con un test que un pico real se conserva en el entrenamiento y queda clasificado
-- [ ] 10.4 Implementar el retraining configurable (`RETRAIN_FREQUENCY`, `MIN_HISTORY`) con omisión documentada cuando no hay datos nuevos suficientes y verificar con un test que ambos caminos (omitir y re-entrenar) se ejercitan
-- [ ] 10.5 Ejecutar una corrida end-to-end sobre las tres fuentes reales y verificar: 0 fallos de leakage, `final_forecast ≤ capacity` en el 100% de registros, métricas y desgloses presentes, dataset Power BI y manifiesto reproducibles
+- [x] 10.1 Implementar la detección de drift de MAPE/WMAPE/Bias y verificar con un test que un deterioro inyectado genera alerta con métrica y magnitud
+- [x] 10.2 Implementar el drift de features, curva de pickup y distribución de demanda y verificar con tests que un desplazamiento inyectado se reporta
+- [x] 10.3 Implementar la detección de outliers con clasificación sin eliminación automática y verificar con un test que un pico real se conserva en el entrenamiento y queda clasificado
+- [x] 10.4 Implementar el retraining configurable (`RETRAIN_FREQUENCY`, `MIN_HISTORY`) con omisión documentada cuando no hay datos nuevos suficientes y verificar con un test que ambos caminos (omitir y re-entrenar) se ejercitan
+- [x] 10.5 Ejecutar una corrida end-to-end sobre las tres fuentes reales y verificar: 0 fallos de leakage, `final_forecast ≤ capacity` en el 100% de registros, métricas y desgloses presentes, dataset Power BI y manifiesto reproducibles
+      ✅ **COMPLETADA** (2026-10-09) sobre las 3 fuentes reales en `data/` (13.9k demanda · 39.5k capacity · 1.57M pickup; 8 propiedades). Los 5 criterios en verde: 0 leakage · 100% `final ≤ capacity` · métricas reales MAPE 29.0% / WMAPE 16.4% + 6 desgloses · Power BI 4 áreas (720 forecast / 7 accuracy / 720 pickup / 1 model) · manifiesto con `benchmark_source: real_backtest`. Ejecutable sin tocar código: `python -m src.forecasting.run_real` (benchmark real 7 candidatos × 4 folds + residuos reales T-30 para la banda P10/P50/P90). Salida: `outputs/runs/real-20261009-1854/`.
+      Adaptaciones al esquema real (config/schema/runner, protegidas por `tests/test_real_data_adaptations.py`): pickup sin columna snapshot (deriva `stay − lead`), alias `Hotel Royal Corin` ≡ `CORIN` (`data.property_aliases`), `rooms_booked` on-the-books acumulado → target `actual − booked` acotado al horizonte (evita ~2× inflado), booked al corte desde el snapshot más reciente ≤ corte, y capacidad por fecha en vez de máximo histórico.

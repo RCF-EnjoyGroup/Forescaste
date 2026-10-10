@@ -36,6 +36,7 @@ class EngineConfig:
     min_history_days: int
     sources: dict[str, str]
     column_hints: dict[str, list[str]]
+    property_aliases: dict[str, str] = field(default_factory=dict)
     log_level: str = "INFO"
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -88,11 +89,15 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
     data_cfg = dict(data.get("data") or {})
     sources = dict(data_cfg.get("sources") or {})
     hints = {k: list(v) for k, v in (data_cfg.get("column_hints") or {}).items()}
+    aliases = {
+        str(k): str(v) for k, v in (data_cfg.get("property_aliases") or {}).items()
+    }
 
     return EngineConfig(
         **values,
         sources=sources,
         column_hints=hints,
+        property_aliases=aliases,
         log_level=str(data.get("log_level", "INFO")),
         raw=data,
     )

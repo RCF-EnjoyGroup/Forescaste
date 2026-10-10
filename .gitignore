@@ -1,5 +1,5 @@
-# Data (nunca se commitea datos reales)
-data/
+# Data (nunca se commitea datos reales) — anclado a la raíz para no ignorar src/data/
+/data/
 *.csv
 *.parquet
 *.xlsx
