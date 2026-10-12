@@ -59,6 +59,15 @@ GROUP BY property, stay_date, (stay_date - snapshotdate)
 ORDER BY property, stay_date, lead_days;
 ```
 
+> **Cadencia histórica de snapshots**: desde 2024 la base captura snapshots
+> **diarios**; antes, la capturación era esparcida (~5 snapshots por estancia).
+> Ambas eras conviven en el histórico y el motor las maneja por diseño: el
+> on-the-books de producción usa el snapshot exacto del corte (as-of), las
+> curvas y el panel ML entrenan con la ventana de recencia de 3 años
+> (prácticamente toda era diaria), y las features de pickup cuentan DÍAS
+> calendario — no snapshots — de modo que "últimos 7 días" significa lo
+> mismo en cualquier era.
+
 ### Query 3 — Capacidad oficial (el TECHO / ocupación)
 
 Exportar como **`capacity_daily.csv`**:

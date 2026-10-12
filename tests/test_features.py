@@ -255,17 +255,64 @@ def _pickup_multi_stay_df():
 
 
 def test_pickup_aceleracion_formula():
+    """Aceleración = pickup de los últimos 7 DÍAS − 7 días previos.
+
+    Con el fixture esparcido (gaps de 30/31/30/15/10/4 días):
+    - 24-feb: últimos 7 días (18→24 feb) contienen solo el salto del propio
+      24-feb (+3); los 7 previos (11→17 feb) contienen el salto del 14 (+7)
+      → desaceleración de −4.
+    - 28-feb: últimos 7 días (22→28 feb) contienen los saltos del 24 (+3)
+      y del 28 (+2) = +5; los 7 previos (15→21 feb) no tienen saltos → +5.
+    """
     df = _pickup_df()
     out = add_pickup_features(df)
-    # aceleración = pickup reciente (3) - pickup previo (3)
-    delta = df["pickup_rn"].diff()
-    recent = delta.rolling(3, min_periods=1).sum()
-    previous = recent.shift(3)
-    expected = recent - previous
     got = out["pickup_acceleration"].astype(float)
-    for i in range(len(out)):
-        if pd.notna(expected.iloc[i]):
-            assert got.iloc[i] == pytest.approx(expected.iloc[i])
+    assert got.iloc[4] == pytest.approx(3.0 - 7.0)
+    assert out["pickup_deceleration"].iloc[4] == pytest.approx(4.0)
+    assert got.iloc[5] == pytest.approx(5.0)
+
+
+def test_pickup_ventanas_calendario_con_cadencia_esparcida():
+    """Regresión fix-pickup-calendar-windows: las ventanas cuentan DÍAS.
+
+    Pre-2024 la base tenía snapshots esparcidos; una ventana de "últimos 7
+    días" implementada por snapshots sumaría hasta 7 semanas de booking.
+    Aquí (saltos: 12-31 +15, 01-30 +13, 02-14 +7, 02-24 +3, 02-28 +2):
+    - 7 días (22→28 feb): saltos del 24 y 28 = 5
+    - 14 días (15→28 feb): saltos del 24 y 28 = 5
+    - 30 días (31-ene→28-feb): saltos del 30-ene, 14, 24 y 28 = 25
+    """
+    df = _pickup_df()
+    out = add_pickup_features(df)
+    assert out["pickup_last_7d"].iloc[-1] == pytest.approx(2.0 + 3.0), (
+        "la ventana de 7 días calendario (22→28 feb) contiene los saltos del 24 y 28"
+    )
+    assert out["pickup_last_14d"].iloc[-1] == pytest.approx(2.0 + 3.0)
+    assert out["pickup_last_30d"].iloc[-1] == pytest.approx(2.0 + 3.0 + 7.0 + 13.0)
+
+
+def test_pickup_ventanas_diarias_igual_a_snapshots():
+    """Era diaria (2024+): ventana de días ≡ ventana de snapshots."""
+    n = 30
+    stay = pd.Timestamp("2026-03-31")
+    snap = pd.date_range(end=stay, periods=n, freq="D")
+    df = pd.DataFrame(
+        {
+            "property": ["corin"] * n,
+            "stay_date": [stay] * n,
+            "snapshot_date": snap,
+            "lead_days": (stay - snap).days,
+            "pickup_rn": np.linspace(10, 60, n).round(1),
+        }
+    )
+    out = add_pickup_features(df)
+    delta = df["pickup_rn"].diff()
+    assert out["pickup_last_1d"].iloc[-1] == pytest.approx(float(delta.iloc[-1]))
+    assert out["pickup_last_7d"].iloc[-1] == pytest.approx(float(delta.tail(7).sum()))
+    assert out["pickup_last_30d"].iloc[-1] == pytest.approx(float(delta.tail(30).sum()))
+    assert out["pickup_acceleration"].iloc[-1] == pytest.approx(
+        float(delta.tail(7).sum() - delta.iloc[-14:-7].sum())
+    )
 
 
 def test_pickup_mismo_lead_asof():
