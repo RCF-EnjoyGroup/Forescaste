@@ -41,6 +41,7 @@ class EngineConfig:
     events_path: str = "data/events.csv"
     pickup_curve: dict[str, Any] = field(default_factory=dict)
     holidays: dict[str, Any] = field(default_factory=dict)
+    benchmark: dict[str, Any] = field(default_factory=dict)
     log_level: str = "INFO"
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -123,6 +124,12 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         "window_days": int((data.get("holidays") or {}).get("window_days", 4)),
     }
 
+    bench_cfg = dict(data.get("benchmark") or {})
+    benchmark_cfg = {
+        "fold_horizon_days": int(bench_cfg.get("fold_horizon_days", 90)),
+        "n_folds": int(bench_cfg.get("n_folds", 4)),
+    }
+
     return EngineConfig(
         **values,
         sources=sources,
@@ -132,6 +139,7 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         events_path=events_path,
         pickup_curve=pickup_curve,
         holidays=holidays_cfg,
+        benchmark=benchmark_cfg,
         log_level=str(data.get("log_level", "INFO")),
         raw=data,
     )

@@ -66,16 +66,23 @@ def run_benchmark(
     candidate_order: list[str] | None = None,
     error_panel: pd.DataFrame | None = None,
     source: str = "real_backtest",
+    dm_horizon: int = 30,
 ) -> BenchmarkResult:
     """9.5 — Evalúa los candidatos con métricas por fold (out-of-sample).
 
     ``error_panel`` habilita la prueba de significancia Diebold-Mariano del
     campeón contra el subcampeón (empate estadístico → desempate por
-    parsimonia). ``source`` etiqueta el origen de la evidencia; un benchmark
-    sintético de reemplazo se declara en el entregable.
+    parsimonia). ``dm_horizon`` es el largo REAL de la ventana de fold (pasos
+    hacia adelante): la corrección HAC debe alinearse con él, porque los
+    errores multi-paso de una ventana larga están correlacionados y un
+    horizonte fijo demasiado corto inflaría la significancia. ``source``
+    etiqueta el origen de la evidencia; un benchmark sintético de reemplazo
+    se declara en el entregable.
     """
     order = candidate_order or CANDIDATE_ORDER
-    selection = select_champion(fold_metrics, error_panel=error_panel)
+    selection = select_champion(
+        fold_metrics, error_panel=error_panel, dm_horizon=int(dm_horizon)
+    )
 
     table = selection.table()
     # asegurar presencia de las 6 columnas del spec (MAPE/WMAPE/MAE/RMSE/Bias + Stability)

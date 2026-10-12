@@ -64,6 +64,14 @@ pickup_curve:
                                     # ~9 días (vs meses de una temporada); con el
                                     # umbral de temporadas (30) serían inalcanzables
 
+# Benchmark de selección (folds): ventanas del horizonte operativo completo.
+# Con spacing trimestral, n_folds=4 y fold_horizon_days=90 las 4 ventanas
+# TESIAN el año anterior al corte (cada estación evaluada, sin solape entre
+# folds ni con la ventana de reporte). 30 = barato pero ciego al régimen largo.
+benchmark:
+  fold_horizon_days: 90
+  n_folds: 4
+
 # Calendario de feriados (fuente confiable: librería `holidays`): CR (Semana
 # Santa, Anexión, Día de la Madre, Independencia…) + mercados emisores US
 # (Thanksgiving, Memorial, Labor Day, 4 de julio). Fechas movibles resueltas

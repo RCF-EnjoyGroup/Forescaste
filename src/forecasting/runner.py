@@ -437,6 +437,26 @@ def _explain_forecast(fc: pd.DataFrame, champion: str) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 
 
+def _dm_horizon_from_panel(error_panel: pd.DataFrame | None) -> int:
+    """Largo REAL de la ventana de fold (pasos) para la corrección HAC de DM.
+
+    El panel de errores trae una fila por fecha evaluada y fold: el número de
+    fechas distintas por fold es el horizonte multi-paso de la evaluación.
+    Se usa la mediana entre folds (robusta a folds recortados por histórico
+    insuficiente). Sin panel evaluable → 30, el default histórico.
+    """
+    if error_panel is None or error_panel.empty or "stay_date" not in error_panel.columns:
+        return 30
+    if "fold" in error_panel.columns:
+        per_fold = error_panel.groupby("fold")["stay_date"].nunique()
+    else:
+        per_fold = pd.Series([error_panel["stay_date"].nunique()])
+    per_fold = per_fold[per_fold > 0]
+    if per_fold.empty:
+        return 30
+    return int(max(1, round(float(per_fold.median()))))
+
+
 def run_end_to_end(
     *,
     demand: pd.DataFrame,
@@ -623,7 +643,8 @@ def run_end_to_end(
     # ---------- 4. benchmark + SELECCIÓN (el campeón elegido OPERA)
     if fold_metrics is not None:
         benchmark = run_benchmark(
-            fold_metrics, error_panel=error_panel, source="real_backtest"
+            fold_metrics, error_panel=error_panel, source="real_backtest",
+            dm_horizon=_dm_horizon_from_panel(error_panel),
         )
         champion = benchmark.champion
         per_prop_sel = (

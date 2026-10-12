@@ -235,7 +235,8 @@ manifiesto) — no se inventan reales futuros.
 
 1. Valida, canoniza propiedades y construye las series diarias
 2. Compara 7 candidatos + baseline con protocolo honesto (backtest expanding,
-   4 folds × 30d sobre la serie agregada, selección de campeón por evidencia
+   4 folds trimestrales × el horizonte operativo completo (90d, config
+   `benchmark`) sobre la serie agregada, selección de campeón por evidencia
    out-of-sample, desgloses por lead/propiedad/temporada)
 3. Pronostica el horizonte configurado del portafolio **y por propiedad**, con:
    - reservas actuales como señal (`rotb_d90/180/365` — correlación 0.93 con lo realizado)

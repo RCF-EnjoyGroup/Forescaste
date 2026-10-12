@@ -182,9 +182,12 @@ openspec/                # specs, propuestas y changelog del proyecto
 - **`final_forecast ≤ capacity`** en el 100% de los registros, **y también
   `p90 ≤ capacity`**: la banda de incertidumbre jamás publica valores
   físicamente imposibles.
-- **Evaluación honesta**: folds de selección trimestrales (cubren estaciones
-  distintas, sin solape con la ventana de reporte), prueba Diebold-Mariano
-  del campeón contra el subcampeón (empate → parsimonia), cobertura de
+- **Evaluación honesta**: folds de selección trimestrales con ventana del
+  horizonte operativo completo (`benchmark.fold_horizon_days`, default 90 —
+  la selección es sensible al régimen largo leads 30–90, no solo a leads
+  cortos), sin solape con la ventana de reporte, prueba Diebold-Mariano
+  del campeón contra el subcampeón con corrección HAC al largo real de la
+  ventana de fold (empate → parsimonia), cobertura de
   evaluación reportada (propiedades dentro/fuera de la ventana) y desglose
   por propiedad persistido en el accuracy report y Power BI.
 - **Reproducible**: misma seed → mismas predicciones, verificado por test.

@@ -11,8 +11,10 @@ Qué hace, sin tocar código:
 1. Lee ``data/capacity_daily.csv``, ``data/demand_daily.csv`` y
    ``data/pickup_by_lead.csv`` (rutas del ``config.yaml``).
 2. Benchmark REAL por propiedad y portafolio: folds trimestrales (cortes a
-   360/270/180/90 días del corte) × 30 días, 7 candidatos. Los folds cubren
-   estaciones distintas del año y NO solapan la ventana de métricas
+   ``spacing·(n_folds..1)`` días del corte) × ventana del horizonte operativo
+   completo (``benchmark.fold_horizon_days``, default 90), 7 candidatos. Con
+   spacing = ventana, las 4 ventanas tesian el año anterior al corte —
+   cada estación evaluada una vez — y NO solapan la ventana de métricas
    publicada. Se emite además un panel de errores por fecha para la prueba
    de significancia Diebold-Mariano del campeón.
 3. Modo verificación (default): corte ``max_stay - horizonte`` para que el
@@ -67,7 +69,11 @@ from src.features.holidays import (
 )
 from src.models.baselines import PickupCurveModel
 
-FOLD_HORIZON = 30  # ventana de cada fold (días)
+# Ventana de cada fold = horizonte OPERATIVO completo (config
+# ``benchmark.fold_horizon_days``). Con spacing trimestral y 4 folds, las 4
+# ventanas tesian el año anterior al corte: cada estación evaluada una vez.
+# (Antes 30d: la selección era ciega al régimen largo leads 30–90.)
+FOLD_HORIZON = 90  # ventana de cada fold (días)
 FOLD_SPACING = 90  # separación trimestral entre folds
 ML_MIN_TRAIN_OBS = 60
 
@@ -113,6 +119,23 @@ def load_real_sources() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Da
 # benchmark real: folds trimestrales × propiedades + portafolio bottom-up
 # --------------------------------------------------------------------------
 
+
+def fold_cutoffs_for(
+    cutoff: pd.Timestamp, n_folds: int = 4, spacing: int = FOLD_SPACING
+) -> list[pd.Timestamp]:
+    """Cortes de los folds de selección: spacing días entre ventanas.
+
+    Con ``spacing == horizon`` las ventanas ``[c+1, c+horizon]`` son
+    contiguas y tesian exactamente los ``spacing·n_folds`` días previos al
+    corte; el último fold termina en ``cutoff`` y por lo tanto NO solapa la
+    ventana de reporte ``(cutoff, cutoff+horizonte]``.
+    """
+    return [
+        pd.Timestamp(cutoff) - pd.Timedelta(days=spacing * (n_folds - i))
+        for i in range(n_folds)
+    ]
+
+
 def real_fold_metrics(
     dem: pd.DataFrame, pick: pd.DataFrame, cutoff: pd.Timestamp,
     horizon: int = FOLD_HORIZON, n_folds: int = 4,
@@ -138,10 +161,7 @@ def real_fold_metrics(
         prueba Diebold-Mariano campeón vs subcampeón).
     """
     props = sorted(dem["property"].dropna().unique())
-    fold_cutoffs = [
-        pd.Timestamp(cutoff) - pd.Timedelta(days=FOLD_SPACING * (n_folds - i))
-        for i in range(n_folds)
-    ]
+    fold_cutoffs = fold_cutoffs_for(cutoff, n_folds)
 
     rows: list[dict] = []
     errors: list[dict] = []
@@ -313,7 +333,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"      modo: {modo}")
 
-    print("[2/5] Benchmark real (folds trimestrales × 30d, 7 candidatos, por propiedad)...")
+    # ventanas de fold del benchmark (config ``benchmark``; sin tocar código)
+    bench_cfg = dict(cfg.benchmark or {})
+    fold_horizon = int(bench_cfg.get("fold_horizon_days", FOLD_HORIZON))
+    n_folds = int(bench_cfg.get("n_folds", 4))
+    print(
+        f"      folds de selección: {n_folds} × {fold_horizon}d "
+        f"(tesing {n_folds * FOLD_SPACING}d previos al corte)"
+    )
+
+    print(f"[2/5] Benchmark real (folds trimestrales × {fold_horizon}d, 7 candidatos, por propiedad)...")
     curve_params = dict(cfg.pickup_curve)
     holiday_cal = holiday_calendar_from_config(
         cfg,
@@ -335,7 +364,8 @@ def main(argv: list[str] | None = None) -> int:
     if events_df is not None:
         print(f"      eventos privados: {len(events_df)} cargados de '{cfg.events_path}'")
     folds, error_panel = real_fold_metrics(
-        dem, pick, cutoff, curve_params=curve_params, holiday_calendar=holiday_cal
+        dem, pick, cutoff, horizon=fold_horizon, n_folds=n_folds,
+        curve_params=curve_params, holiday_calendar=holiday_cal,
     )
     if folds.empty:
         print("ERROR: el benchmark no produjo evaluaciones (¿histórico insuficiente?).", file=sys.stderr)
