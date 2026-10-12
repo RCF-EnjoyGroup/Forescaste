@@ -42,21 +42,50 @@ class CapacityAlert:
         }
 
 
+@dataclass
+class BookedFloorAlert:
+    """El campeón pronosticó por debajo de las reservas ya confirmadas."""
+
+    property: str
+    stay_date: str
+    raw_forecast: float
+    current_booked_rn: float
+    shortfall: float  # booked - raw (cuánto faltaba llegar al piso)
+
+    def to_dict(self) -> dict:
+        return {
+            "property": self.property,
+            "stay_date": self.stay_date,
+            "raw_forecast": self.raw_forecast,
+            "current_booked_rn": self.current_booked_rn,
+            "shortfall": self.shortfall,
+        }
+
+
 def apply_capacity_constraint(
     df: pd.DataFrame,
     capacity_col: str = "capacity",
     raw_col: str = "raw_forecast_rn",
     property_col: str = "property",
     date_col: str = "stay_date",
-) -> tuple[pd.DataFrame, list[CapacityAlert]]:
-    """5.5 — Aplica el techo de capacidad sin ocultar el comportamiento bruto.
+    booked_col: str | None = "current_booked_rn",
+) -> tuple[pd.DataFrame, list]:
+    """Piso de reservas + techo de capacidad (spec forecasting).
+
+    ``final = min(max(raw, current_booked_rn), capacity)`` cuando existe
+    on-the-books as-of el corte; sin booked → ``final = min(raw, capacity)``.
+    El forecast publicado nunca queda por debajo de lo ya reservado (salvo
+    que el propio booked exceda la capacidad: entonces manda la capacidad —
+    físicamente inviolable — y se emite una alerta ``booked_over_capacity``).
 
     Returns
     -------
     (frame, alerts):
-        ``frame`` tiene ``raw_forecast_rn``, ``capacity`` y
-        ``final_forecast_rn`` separados; ``alerts`` lista las violaciones
-        detectadas ANTES de aplicar el cap (spec: emitir alerta).
+        ``frame`` conserva ``raw_forecast_rn`` intacto, agrega
+        ``final_forecast_rn``, ``booked_floor_applied`` y
+        ``capacity_constraint_applied``; ``alerts`` lista las violaciones
+        detectadas ANTES de aplicar (capacidad → :class:`CapacityAlert`,
+        piso/booked-sobre-capacidad → :class:`BookedFloorAlert`).
     """
     out = df.copy()
     if raw_col not in out.columns:
@@ -64,24 +93,59 @@ def apply_capacity_constraint(
     if capacity_col not in out.columns:
         raise KeyError(f"falta la columna de capacidad: '{capacity_col}'")
 
-    raw = pd.to_numeric(out[raw_col], errors="coerce")
-    cap = pd.to_numeric(out[capacity_col], errors="coerce")
+    raw = pd.to_numeric(out[raw_col], errors="coerce").to_numpy(dtype=float)
+    cap = pd.to_numeric(out[capacity_col], errors="coerce").to_numpy(dtype=float)
+    has_booked_col = booked_col is not None and booked_col in out.columns
+    booked = (
+        pd.to_numeric(out[booked_col], errors="coerce").to_numpy(dtype=float)
+        if has_booked_col else np.full(len(out), np.nan)
+    )
 
-    # alerta ANTES del cap
-    violation = raw > cap
-    alerts = [
-        CapacityAlert(
-            property=str(r[property_col]),
-            stay_date=str(pd.Timestamp(r[date_col]).date()),
-            raw_forecast=float(r[raw_col]),
-            capacity=float(r[capacity_col]),
-            capped_by=float(r[raw_col] - r[capacity_col]),
+    alerts: list = []
+
+    # piso de reservas: booked conocido y por encima del raw del campeón
+    floor_binds = np.isfinite(booked) & np.isfinite(raw) & (raw < booked)
+    floored = np.where(floor_binds, booked, raw)
+    for i in np.flatnonzero(floor_binds):
+        alerts.append(
+            BookedFloorAlert(
+                property=str(out.iloc[i][property_col]),
+                stay_date=str(pd.Timestamp(out.iloc[i][date_col]).date()),
+                raw_forecast=float(raw[i]),
+                current_booked_rn=float(booked[i]),
+                shortfall=float(booked[i] - raw[i]),
+            )
         )
-        for _, r in out.loc[violation.fillna(False)].iterrows()
-    ]
+    # booked > capacidad: inconsistencia de DATOS (el piso no puede empujar
+    # por encima del inventario físico) — se reporta, no se corrige aquí
+    booked_over = np.isfinite(booked) & np.isfinite(cap) & (booked > cap)
+    for i in np.flatnonzero(booked_over):
+        alerts.append(
+            BookedFloorAlert(
+                property=str(out.iloc[i][property_col]),
+                stay_date=str(pd.Timestamp(out.iloc[i][date_col]).date()),
+                raw_forecast=float("nan"),
+                current_booked_rn=float(booked[i]),
+                shortfall=float(cap[i] - booked[i]),
+            )
+        )
 
-    out["final_forecast_rn"] = np.minimum(raw, cap)
-    out["capacity_constraint_applied"] = violation.fillna(False)
+    # alerta del TECHO antes del cap (sobre el valor ya pisado por el piso)
+    violation = np.isfinite(floored) & np.isfinite(cap) & (floored > cap)
+    for i in np.flatnonzero(violation):
+        alerts.append(
+            CapacityAlert(
+                property=str(out.iloc[i][property_col]),
+                stay_date=str(pd.Timestamp(out.iloc[i][date_col]).date()),
+                raw_forecast=float(raw[i]),
+                capacity=float(cap[i]),
+                capped_by=float(floored[i] - cap[i]),
+            )
+        )
+
+    out["final_forecast_rn"] = np.minimum(floored, cap)
+    out["capacity_constraint_applied"] = violation
+    out["booked_floor_applied"] = floor_binds
     return out, alerts
 
 

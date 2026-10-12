@@ -55,6 +55,7 @@ from src.features.holidays import (
 )
 from src.features.pickup import add_pickup_features
 from src.forecasting.constraints import (
+    BookedFloorAlert,
     apply_capacity_constraint,
     build_intervals,
     compute_occupancy,
@@ -695,6 +696,10 @@ def run_end_to_end(
     raw["capacity"] = raw["capacity"].fillna(raw["property"].map(prop_cap)).fillna(100.0)
     constrained, cap_alerts = apply_capacity_constraint(raw)
     with_occ = compute_occupancy(constrained)
+    # piso de reservas: separa las alertas de piso de las de techo
+    floor_alerts = [a for a in cap_alerts if isinstance(a, BookedFloorAlert)]
+    capacity_only_alerts = [a for a in cap_alerts if not isinstance(a, BookedFloorAlert)]
+    n_floor_applied = int(constrained.get("booked_floor_applied", pd.Series(dtype=bool)).sum())
 
     # ---------- 7. backtest T-90..T-1 muestreado (residuos por lead band)
     backtest_report, residual_bands, residuals_flat = _sampled_backtest(
@@ -890,6 +895,13 @@ def run_end_to_end(
         extra={
             "data_quality_status": dq_report.status,
             "n_capacity_alerts": len(cap_alerts),
+            "n_booked_floor_alerts": int(
+                sum(1 for a in cap_alerts if isinstance(a, BookedFloorAlert) and a.shortfall > 0)
+            ),
+            "n_booked_over_capacity": int(
+                sum(1 for a in cap_alerts if isinstance(a, BookedFloorAlert) and np.isnan(a.raw_forecast))
+            ),
+            "n_booked_floor_applied": n_floor_applied,
             "kpis": _jsonable(kpis),
             "sample_data": sample_data,
             "benchmark_source": benchmark_source,
@@ -971,9 +983,18 @@ def run_end_to_end(
     )
 
     # ---------- checks
+    # con piso de booked: final >= booked cuando booked existe (spec forecasting)
+    booked_vals = pd.to_numeric(fc_table.get("current_booked_rn"), errors="coerce")
+    floor_ok = True
+    if booked_vals is not None:
+        mask = booked_vals.notna() & (booked_vals <= fc_table["capacity"] + 1e-9)
+        floor_ok = bool(
+            (fc_table.loc[mask, "final_forecast_rn"] >= booked_vals[mask] - 1e-9).all()
+        )
     capacity_ok = bool(
         (fc_table["final_forecast_rn"] <= fc_table["capacity"] + 1e-9).all()
         and not forecast_problems
+        and floor_ok
     )
     checks = AcceptanceChecks(
         leakage_clean=leakage_clean,
@@ -986,6 +1007,13 @@ def run_end_to_end(
             "forecast_problems": forecast_problems,
             "missing_features": missing_feats,
             "n_capacity_alerts": len(cap_alerts),
+            "n_booked_floor_applied": n_floor_applied,
+            "n_booked_floor_alerts": int(
+                sum(1 for a in cap_alerts if isinstance(a, BookedFloorAlert) and a.shortfall > 0)
+            ),
+            "n_booked_over_capacity": int(
+                sum(1 for a in cap_alerts if isinstance(a, BookedFloorAlert) and np.isnan(a.raw_forecast))
+            ),
             "kpis": kpis,
             "leakage_findings": len(leakage_report.findings),
             "n_breakdowns": len(breakdowns),

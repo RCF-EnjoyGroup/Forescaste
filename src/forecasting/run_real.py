@@ -169,6 +169,7 @@ def real_fold_metrics(
         dates = pd.date_range(c + pd.Timedelta(days=1), periods=horizon, freq="D")
         per_prop: dict[str, dict[str, pd.Series]] = {}
         actual_by_prop: dict[str, pd.Series] = {}
+        viable_by_model: dict[str, set[str]] = {m: set() for m in CANDIDATE_MODELS}
         for p in props:
             dem_p = dem.loc[dem["property"] == p]
             pick_p = pick.loc[pick["property"] == p]

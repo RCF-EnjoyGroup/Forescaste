@@ -86,15 +86,25 @@ def validate_forecast_table(table: pd.DataFrame) -> list[str]:
             n = int(table[col].isna().sum())
             problems.append(f"columna obligatoria con {n} nulos: {col}")
 
-    # invariantes numéricas
+    # invariantes numéricas: piso de booked + techo de capacidad
     if {"raw_forecast_rn", "capacity", "final_forecast_rn"} <= set(table.columns):
         raw = pd.to_numeric(table["raw_forecast_rn"], errors="coerce")
         cap = pd.to_numeric(table["capacity"], errors="coerce")
         fin = pd.to_numeric(table["final_forecast_rn"], errors="coerce")
+        if "current_booked_rn" in table.columns:
+            booked = pd.to_numeric(table["current_booked_rn"], errors="coerce")
+            # NaN en booked → sin piso → esperado = min(raw, cap)
+            has_booked = np.isfinite(booked)
+            floored = np.where(has_booked, np.maximum(raw, booked), raw)
+            esperado = np.minimum(floored, cap)
+        else:
+            esperado = np.minimum(raw, cap)
         if not (fin <= cap + 1e-9).all():
             problems.append("final_forecast_rn excede la capacidad")
-        if not np.allclose(fin, np.minimum(raw, cap), equal_nan=True):
-            problems.append("final_forecast_rn no coincide con min(raw, capacity)")
+        if not np.allclose(fin, esperado, equal_nan=True):
+            problems.append(
+                "final_forecast_rn no coincide con min(max(raw, booked), capacity)"
+            )
     return problems
 
 
