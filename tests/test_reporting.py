@@ -428,3 +428,142 @@ def test_reporte_visual_ignora_actual_de_longitud_distinta(tmp_path):
     bad = pd.Series([1.0, 2.0])  # largo != len(fc)
     out = generate_visual_report(tmp_path, fc, actual=bad)
     assert out.exists(), "un actual mal alineado no debe romper el reporte"
+
+# --------------------------------------------------------------------------
+# cambio enhance-visual-report: secciones por propiedad
+# --------------------------------------------------------------------------
+
+
+def _fc_multi_propiedad(n=20):
+    dates = pd.date_range("2026-03-01", periods=n)
+    frames = []
+    for prop, base in (("CORIN", 90.0), ("FIESTA", 40.0)):
+        frames.append(
+            pd.DataFrame(
+                {
+                    "property": [prop] * n,
+                    "stay_date": dates,
+                    "forecast_date": pd.Timestamp("2026-02-01"),
+                    "lead_days": list(range(29, 9, -1))[:n] if n <= 20 else [59] * n,
+                    "current_booked_rn": np.linspace(base * 0.3, base * 0.7, n),
+                    "capacity": [base * 1.2] * n,
+                    "raw_forecast_rn": np.linspace(base * 0.6, base, n),
+                    "final_forecast_rn": np.linspace(base * 0.6, base, n),
+                    "model_name": ["pickup_curve"] * n,
+                    "model_version": ["0.1.0"] * n,
+                    "forecast_run_timestamp": ["2026-02-01T00:00:00+00:00"] * n,
+                    "p10_forecast": np.linspace(base * 0.5, base * 0.9, n),
+                    "p50_forecast": np.linspace(base * 0.6, base, n),
+                    "p90_forecast": np.linspace(base * 0.7, base * 1.1, n),
+                    "forecast_occupancy": np.linspace(0.5, 0.8, n),
+                }
+            )
+        )
+    return pd.concat(frames, ignore_index=True)
+
+
+def _property_breakdown_df():
+    return pd.DataFrame(
+        {
+            "property": ["CORIN", "FIESTA"],
+            "mape": [12.5, 22.0],
+            "wmape": [0.12, 0.22],
+            "mae": [8.0, 6.0],
+            "rmse": [11.0, 8.5],
+            "bias": [-0.03, 0.05],
+            "n_obs": [20, 20],
+            "rank": [1, 2],
+        }
+    )
+
+
+def _backtest_report_dict():
+    return {
+        "n_revisions": 28,
+        "global": {"mape": 20.0, "wmape": 0.2},
+        "by_property": [
+            {"property": "CORIN", "model": "pickup_curve", "n_obs": 14,
+             "mape": 18.0, "wmape": 0.18},
+            {"property": "FIESTA", "model": "sarimax", "n_obs": 14,
+             "mape": 25.0, "wmape": 0.25},
+        ],
+        "by_lead_band": [
+            {"lead_band": "90+", "n_obs": 4, "mape": 40.0, "wmape": 0.40},
+            {"lead_band": "30-59", "n_obs": 4, "mape": 25.0, "wmape": 0.25},
+            {"lead_band": "1-2", "n_obs": 4, "mape": 10.0, "wmape": 0.10},
+        ],
+        "by_property_lead_band": [
+            {"property": "CORIN", "lead_band": "90+", "n_obs": 2, "mape": 35.0, "wmape": 0.35},
+            {"property": "CORIN", "lead_band": "30-59", "n_obs": 2, "mape": 20.0, "wmape": 0.20},
+            {"property": "CORIN", "lead_band": "1-2", "n_obs": 2, "mape": 8.0, "wmape": 0.08},
+            {"property": "FIESTA", "lead_band": "90+", "n_obs": 2, "mape": 45.0, "wmape": 0.45},
+            {"property": "FIESTA", "lead_band": "30-59", "n_obs": 2, "mape": 30.0, "wmape": 0.30},
+            {"property": "FIESTA", "lead_band": "1-2", "n_obs": 2, "mape": 12.0, "wmape": 0.12},
+        ],
+    }
+
+
+def test_reporte_visual_con_detalle_por_propiedad(tmp_path):
+    fc = _fc_multi_propiedad()
+    kpis = {
+        "forecast_room_nights": 2600.0,
+        "forecast_occupancy": 0.6,
+        "n_properties_evaluated": 2.0,
+        "n_properties_portfolio": 2.0,
+    }
+    out = generate_visual_report(
+        tmp_path, fc,
+        kpis=kpis,
+        property_breakdown=_property_breakdown_df(),
+        model_by_property={"CORIN": "pickup_curve", "FIESTA": "sarimax"},
+        backtest_report=_backtest_report_dict(),
+        champion="pickup_curve",
+    )
+    html = out.read_text(encoding="utf-8")
+    # secciones nuevas presentes
+    assert "Forecast por propiedad" in html
+    assert "Accuracy por propiedad" in html
+    assert "Revisiones T-90..T-1" in html
+    # KPIs nuevos: campeón y propiedades evaluadas n/N
+    assert "Campe" in html and "pickup_curve" in html
+    assert "2 / 2" in html
+    # la tabla de accuracy declara el modelo de cada propiedad
+    assert "sarimax" in html
+    # imágenes embebidas de las secciones nuevas
+    assert html.count("data:image/png;base64,") >= 4
+
+
+def test_reporte_visual_por_propiedad_se_omita_sin_datos(tmp_path):
+    fc = _forecast_df()  # una sola propiedad, sin desgloses ni backtest
+    out = generate_visual_report(tmp_path, fc)
+    html = out.read_text(encoding="utf-8")
+    assert "Accuracy por propiedad" not in html
+    assert "Revisiones T-90..T-1" not in html
+    assert "Campe" not in html  # sin champion no hay tarjeta
+
+
+def test_sampled_backtest_emite_desglose_por_propiedad_y_banda():
+    from src.forecasting.runner import _sampled_backtest
+    from tests.test_remediation import _demand_2props, _pickup_2props
+
+    dem = _demand_2props(n=400)
+    pick = _pickup_2props(dem)
+    history = dem.rename(columns={"rooms_sold": "room_nights"})
+    pickup = pick.rename(
+        columns={
+            "hotel": "property", "stay": "stay_date", "snap": "snapshot_date",
+            "lead": "lead_days", "booked_rn": "pickup_rn",
+        }
+    )
+    report, bands, residuals = _sampled_backtest(
+        history, pickup,
+        {"corin": "seasonal_naive", "fiesta": "seasonal_naive"},
+        pd.Timestamp("2026-06-20"),
+        backtest_cfg={"n_stays": 4, "lookback_days": 30},
+    )
+    rows = report.get("by_property_lead_band") or []
+    assert rows, "el backtest debe emitir el desglose propiedad × banda"
+    keys = {(r["property"], r["lead_band"]) for r in rows}
+    assert ("corin", "1-2") in keys and ("fiesta", "90+") in keys
+    for r in rows:
+        assert {"property", "lead_band", "n_obs", "wmape", "mape"} <= set(r)

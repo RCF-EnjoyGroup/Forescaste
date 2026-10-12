@@ -12,7 +12,12 @@ Secciones (todas defensivas ante datos ausentes):
 - **Pickup**: ocupación de los libros por lead time.
 - **Benchmark**: WMAPE por modelo candidato con el campeón destacado.
 - **Forecast**: pronóstico por propiedad con banda P10/P50/P90.
+- **Forecast por propiedad**: small multiples con banda, techo de capacidad,
+  reales cuando existen y el modelo que opera cada hotel.
 - **Forecast vs reales**: superposición y dispersión cuando hay ``actual``.
+- **Accuracy por propiedad**: barras de WMAPE + tabla con modelo y bias.
+- **Revisiones T-90..T-1 por propiedad**: WMAPE del backtest muestreado y
+  convergencia del error por banda de lead (una línea por propiedad).
 - **Ocupación**: forecast contra el techo de capacidad.
 """
 
@@ -20,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -246,6 +252,198 @@ def _chart_occupancy(fc: pd.DataFrame) -> str | None:
 
 
 # ------------------------------------------------------------------
+# gráficos por propiedad (remediación de la vista: la operación es por hotel)
+# ------------------------------------------------------------------
+
+
+def _chart_forecast_by_property(
+    fc: pd.DataFrame, actual: pd.Series | None, model_by_property: dict | None
+) -> str | None:
+    """Small multiples: P50 + banda P10/P90 + capacidad + reales por propiedad."""
+    if "property" not in fc.columns or "stay_date" not in fc.columns:
+        return None
+    work = fc.copy()
+    work["stay_date"] = pd.to_datetime(work["stay_date"], errors="coerce")
+    work["final_forecast_rn"] = pd.to_numeric(work.get("final_forecast_rn"), errors="coerce")
+    work["_actual"] = (
+        pd.to_numeric(actual, errors="coerce").reindex(work.index)
+        if actual is not None else float("nan")
+    )
+    props = sorted(work["property"].dropna().unique())
+    if not props:
+        return None
+    ncols = 3 if len(props) > 3 else max(len(props), 1)
+    nrows = math.ceil(len(props) / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.3 * ncols, 2.9 * nrows), squeeze=False)
+    for ax, prop in zip(axes.flat, props):
+        g = work.loc[work["property"] == prop].sort_values("stay_date")
+        model = (model_by_property or {}).get(str(prop))
+        ax.set_title(str(prop) + (f" · {model}" if model else ""), loc="left", fontsize=9)
+        if g["final_forecast_rn"].notna().sum() == 0:
+            ax.axis("off")
+            continue
+        if {"p10_forecast", "p90_forecast"} <= set(g.columns):
+            p10 = pd.to_numeric(g["p10_forecast"], errors="coerce")
+            p90 = pd.to_numeric(g["p90_forecast"], errors="coerce")
+            if p10.notna().any() and p90.notna().any():
+                ax.fill_between(g["stay_date"], p10, p90, color=_COLORS["band"], alpha=0.5)
+        ax.plot(g["stay_date"], g["final_forecast_rn"], color=_COLORS["forecast"], lw=1.4)
+        if "capacity" in g.columns:
+            cap = pd.to_numeric(g["capacity"], errors="coerce")
+            if cap.notna().any():
+                ax.plot(g["stay_date"], cap, color=_COLORS["capacity"], lw=1.0, ls="--")
+        if g["_actual"].notna().any():
+            ax.plot(g["stay_date"], g["_actual"], color=_COLORS["actual"], lw=1.1)
+        ax.grid(alpha=0.25)
+        ax.tick_params(labelsize=7)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
+    for ax in axes.flat[len(props):]:
+        ax.axis("off")
+    fig.tight_layout(h_pad=1.2, w_pad=1.2)
+    return _fig_to_base64(fig)
+
+
+def _wmape_color(value: float) -> str:
+    """Semáforo de WMAPE: verde <15%, azul <30%, rojo ≥30%."""
+    if value < 0.15:
+        return _COLORS["champ"]
+    if value < 0.30:
+        return _COLORS["forecast"]
+    return _COLORS["actual"]
+
+
+def _chart_accuracy_by_property(breakdown: pd.DataFrame | None) -> str | None:
+    """Barras horizontales de WMAPE por propiedad, anotadas con bias."""
+    if breakdown is None or breakdown.empty or "wmape" not in breakdown.columns:
+        return None
+    b = breakdown.copy().dropna(subset=["wmape"])
+    if b.empty:
+        return None
+    b = b.sort_values("wmape")
+    fig, ax = plt.subplots(figsize=(7, 0.55 * len(b) + 1.3))
+    ax.barh(b["property"].astype(str), b["wmape"], color=[_wmape_color(v) for v in b["wmape"]])
+    for y, (w, bias) in enumerate(zip(b["wmape"], b.get("bias", pd.Series(dtype=float)))):
+        ax.text(w, y, f"  bias {bias:+.3f}", va="center", fontsize=7.5, color="#475569")
+    ax.set_title("WMAPE por propiedad (menor = mejor; verde <15%, azul <30%)",
+                 loc="left", fontsize=11)
+    ax.set_xlabel("WMAPE")
+    ax.tick_params(labelsize=8.5)
+    ax.grid(alpha=0.25, axis="x")
+    return _fig_to_base64(fig)
+
+
+def _table_accuracy_by_property(
+    breakdown: pd.DataFrame | None, model_by_property: dict | None
+) -> str:
+    """Tabla propiedad | modelo | WMAPE | MAPE | bias | n_obs."""
+    if breakdown is None or breakdown.empty:
+        return ""
+    b = breakdown.copy().sort_values("wmape")
+    rows = []
+    for _, r in b.iterrows():
+        prop = str(r.get("property"))
+        model = (model_by_property or {}).get(prop, "—")
+        def _f(key: str, fmt: str) -> str:
+            try:
+                return format(float(r[key]), fmt)
+            except (KeyError, TypeError, ValueError):
+                return "—"
+        rows.append(
+            f"<tr><td>{prop}</td><td>{model}</td>"
+            f"<td>{_f('wmape', '.3f')}</td><td>{_f('mape', '.1f')}</td>"
+            f"<td>{_f('bias', '+.3f')}</td><td>{_f('n_obs', ',')}</td></tr>"
+        )
+    return (
+        '<table class="tbl"><thead><tr><th>Propiedad</th><th>Modelo</th>'
+        "<th>WMAPE</th><th>MAPE</th><th>Bias</th><th>n obs</th></tr></thead>"
+        "<tbody>" + "".join(rows) + "</tbody></table>"
+    )
+
+
+def _chart_backtest_by_property(backtest_report: dict | None) -> str | None:
+    """WMAPE de las revisiones T-90..T-1 por propiedad (campeón operante)."""
+    if not backtest_report:
+        return None
+    rows = backtest_report.get("by_property") or []
+    if not rows:
+        return None
+    df = pd.DataFrame(rows).dropna(subset=["wmape"]).sort_values("wmape")
+    if df.empty:
+        return None
+    labels = [f"{r['property']} ({r.get('model', '?')})" for _, r in df.iterrows()]
+    fig, ax = plt.subplots(figsize=(7, 0.55 * len(df) + 1.5))
+    ax.barh(labels, df["wmape"], color=[_wmape_color(v) for v in df["wmape"]])
+    for y, (w, n) in enumerate(zip(df["wmape"], df.get("n_obs", 0))):
+        ax.text(w, y, f"  n={int(n)}", va="center", fontsize=7.5, color="#475569")
+    ax.set_title("Revisiones T-90..T-1 · WMAPE por propiedad (backtest muestreado)",
+                 loc="left", fontsize=11)
+    ax.set_xlabel("WMAPE")
+    ax.tick_params(labelsize=8.5)
+    ax.grid(alpha=0.25, axis="x")
+    return _fig_to_base64(fig)
+
+
+def _chart_revisions_by_lead(backtest_report: dict | None) -> str | None:
+    """Convergencia: WMAPE por banda de lead (una línea por propiedad)."""
+    if not backtest_report:
+        return None
+    rows = backtest_report.get("by_property_lead_band") or []
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    if not {"property", "lead_band", "wmape"} <= set(df.columns):
+        return None
+    order = ["90+", "60-89", "30-59", "14-29", "7-13", "3-6", "1-2"]
+    present = [bnd for bnd in order if bnd in set(df["lead_band"])]
+    if not present:
+        return None
+    x = range(len(present))
+    fig, ax = plt.subplots(figsize=(8.4, 3.8))
+    for prop, g in df.groupby("property"):
+        s = g.set_index("lead_band")["wmape"].reindex(present)
+        ax.plot(x, s.values, marker="o", ms=3.5, lw=1.4, label=str(prop))
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(present)
+    ax.set_title("Convergencia · WMAPE por anticipación (T-90 → T-1, una línea por propiedad)",
+                 loc="left", fontsize=11)
+    ax.set_xlabel("Anticipación (banda de lead)")
+    ax.set_ylabel("WMAPE")
+    ax.legend(fontsize=7.5, ncol=min(3, df["property"].nunique()), loc="upper right")
+    ax.grid(alpha=0.25)
+    return _fig_to_base64(fig)
+
+
+def _table_backtest_lead_band(backtest_report: dict | None) -> str:
+    """Tabla global del backtest por banda de lead."""
+    if not backtest_report:
+        return ""
+    rows = backtest_report.get("by_lead_band") or []
+    if not rows:
+        return ""
+    order = ["90+", "60-89", "30-59", "14-29", "7-13", "3-6", "1-2"]
+    df = pd.DataFrame(rows)
+    present = [b for b in order if b in set(df.get("lead_band", []))]
+    if present:
+        df = df.set_index("lead_band").reindex(present).reset_index()
+    cells = []
+    for _, r in df.iterrows():
+        def _f(key: str, fmt: str) -> str:
+            try:
+                return format(float(r[key]), fmt)
+            except (KeyError, TypeError, ValueError):
+                return "—"
+        cells.append(
+            f"<tr><td>{r.get('lead_band', '—')}</td><td>{_f('n_obs', ',')}</td>"
+            f"<td>{_f('wmape', '.3f')}</td><td>{_f('mape', '.1f')}</td></tr>"
+        )
+    return (
+        '<table class="tbl"><thead><tr><th>Banda</th><th>n obs</th>'
+        "<th>WMAPE</th><th>MAPE</th></tr></thead><tbody>"
+        + "".join(cells) + "</tbody></table>"
+    )
+
+
+# ------------------------------------------------------------------
 # ensamblado HTML
 # ------------------------------------------------------------------
 
@@ -256,8 +454,8 @@ def _img_tag(b64: str | None, alt: str) -> str:
     return f'<img alt="{alt}" src="data:image/png;base64,{b64}"/>'
 
 
-def _kpi_grid(kpis: dict | None) -> str:
-    if not kpis:
+def _kpi_grid(kpis: dict | None, champion: str | None = None) -> str:
+    if not kpis and not champion:
         return ""
     labels = {
         "forecast_room_nights": "Forecast RN",
@@ -265,15 +463,33 @@ def _kpi_grid(kpis: dict | None) -> str:
         "forecast_bias": "Bias",
         "expected_pickup": "Pickup esperado",
         "capacity_utilization": "Uso capacidad",
+        "n_properties_evaluated": "Propiedades evaluadas",
+        "forecast_accuracy_wmape": "WMAPE",
+        "forecast_accuracy_mape": "MAPE",
     }
     cells = []
+    if champion:
+        cells.append(
+            f'<div class="kpi"><span class="kpi-l">Campeón</span>'
+            f'<span class="kpi-v">{champion}</span></div>'
+        )
     for key, label in labels.items():
-        if key not in kpis:
+        if not kpis or key not in kpis:
             continue
         val = kpis[key]
         try:
             val = float(val)
-            shown = f"{val:.1%}" if ("occupancy" in key or "utilization" in key) else f"{val:,.1f}"
+            if key == "n_properties_evaluated":
+                total = float(kpis.get("n_properties_portfolio", 0) or 0)
+                shown = f"{val:.0f} / {total:.0f}"
+            elif "occupancy" in key or "utilization" in key:
+                shown = f"{val:.1%}"
+            elif key == "forecast_accuracy_mape":
+                shown = f"{val:.1f}%"
+            elif key == "forecast_accuracy_wmape":
+                shown = f"{val:.3f}"
+            else:
+                shown = f"{val:,.1f}"
         except (TypeError, ValueError):
             shown = str(val)
         cells.append(f'<div class="kpi"><span class="kpi-l">{label}</span>'
@@ -305,12 +521,20 @@ def generate_visual_report(
     metrics: dict | None = None,
     kpis: dict | None = None,
     actual: pd.Series | None = None,
+    property_breakdown: pd.DataFrame | None = None,
+    model_by_property: dict | None = None,
+    backtest_report: dict | None = None,
+    champion: str | None = None,
     title: str = "Reporte de revisión · Forecast de Room Nights",
 ) -> Path:
     """Escribe ``<run_dir>/report.html`` con los gráficos embebidos.
 
     Todos los parámetros de datos son opcionales: las secciones ausentes se
-    omiten con un mensaje en lugar de fallar la corrida.
+    omiten con un mensaje en lugar de fallar la corrida. El detalle por
+    propiedad (forecast/bandas/modelo, accuracy y revisiones del backtest
+    T-90..T-1) se activa con ``property_breakdown``/``model_by_property``/
+    ``backtest_report``/``champion``; sin ellos el reporte queda como la
+    vista de portafolio clásica.
     """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -325,6 +549,8 @@ def generate_visual_report(
     sections = [
         ("Forecast", _chart_forecast(forecast)),
         ("Forecast vs Real", _chart_forecast_vs_actual(forecast, actual_series)),
+        ("Forecast por propiedad",
+         _chart_forecast_by_property(forecast, actual_series, model_by_property)),
         ("Benchmark", _chart_benchmark(benchmark)),
         ("Pickup", _chart_pickup(forecast)),
         ("Ocupación", _chart_occupancy(forecast)),
@@ -341,6 +567,27 @@ def generate_visual_report(
         cards.append(f'<section class="card narrow"><h2>Dispersión</h2>'
                      f"{_img_tag(scatter, 'dispersión')}</section>")
 
+    # ---- accuracy por propiedad: barras + tabla exacta en la misma tarjeta
+    acc_img = _chart_accuracy_by_property(property_breakdown)
+    acc_tbl = _table_accuracy_by_property(property_breakdown, model_by_property)
+    if acc_img or acc_tbl:
+        cards.append(
+            '<section class="card"><h2>Accuracy por propiedad</h2>'
+            f"{_img_tag(acc_img, 'accuracy por propiedad')}{acc_tbl}</section>"
+        )
+
+    # ---- revisiones T-90..T-1: por propiedad + convergencia por lead band
+    rev_prop = _chart_backtest_by_property(backtest_report)
+    rev_lead = _chart_revisions_by_lead(backtest_report)
+    rev_tbl = _table_backtest_lead_band(backtest_report)
+    if rev_prop or rev_lead or rev_tbl:
+        cards.append(
+            '<section class="card"><h2>Revisiones T-90..T-1 · por propiedad</h2>'
+            f"{_img_tag(rev_prop, 'revisiones por propiedad')}"
+            f"{_img_tag(rev_lead, 'convergencia por anticipación')}"
+            f"{rev_tbl}</section>"
+        )
+
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     html = f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8"/>
@@ -349,7 +596,7 @@ def generate_visual_report(
 <style>
   :root {{ color-scheme: light; }}
   body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0;
-         background: #f8fafc; color: #1e293b; }}
+          background: #f8fafc; color: #1e293b; }}
   header {{ background: #0f172a; color: #f8fafc; padding: 20px 28px; }}
   header h1 {{ margin: 0; font-size: 20px; font-weight: 600; }}
   header p {{ margin: 4px 0 0; color: #94a3b8; font-size: 13px; }}
@@ -365,7 +612,8 @@ def generate_visual_report(
   .card.narrow {{ grid-column: span 1; }}
   .card h2 {{ margin: 0 0 12px; font-size: 14px; font-weight: 600; color: #334155;
               text-transform: uppercase; letter-spacing: .03em; }}
-  .card img {{ width: 100%; height: auto; }}
+  .card img {{ width: 100%; height: auto; margin-bottom: 10px; }}
+  .card img:last-child {{ margin-bottom: 0; }}
   .muted {{ color: #94a3a3; font-style: italic; }}
   table.tbl {{ border-collapse: collapse; width: 100%; font-size: 14px; }}
   table.tbl th, table.tbl td {{ text-align: left; padding: 6px 10px;
@@ -381,7 +629,7 @@ def generate_visual_report(
   <p>Generado {stamp} · vista de análisis (la lógica vive en src/, este reporte solo presenta)</p>
 </header>
 <main>
-  {_kpi_grid(kpis)}
+  {_kpi_grid(kpis, champion)}
   <div class="grid">
     {"".join(cards)}
     <section class="card"><h2>Métricas</h2>{_fmt_metrics(metrics)}</section>

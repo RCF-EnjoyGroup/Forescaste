@@ -299,6 +299,16 @@ def _sampled_backtest(
         met = compute_metrics(grp["actual"], grp["forecast"])
         by_property.append({"property": prop, "model": grp["model_name"].iloc[0], "n_obs": int(len(grp)), **met.to_dict()})
 
+    # convergencia por propiedad: cómo decae el error conforme se acerca la
+    # estancia (una observación por propiedad × banda de lead) — base de la
+    # gráfica de revisiones del report.html
+    by_property_lead: list[dict] = []
+    for (prop, band), grp in frame.groupby(["property", "lead_band_name"]):
+        met = compute_metrics(grp["actual"], grp["forecast"])
+        by_property_lead.append(
+            {"property": prop, "lead_band": band, "n_obs": int(len(grp)), **met.to_dict()}
+        )
+
     residual_bands: dict[str, pd.Series] = {
         band: grp["residual"].reset_index(drop=True)
         for band, grp in frame.groupby("lead_band_name")
@@ -314,6 +324,7 @@ def _sampled_backtest(
         "global": _jsonable(global_metrics),
         "by_lead_band": _jsonable(by_lead_band),
         "by_property": _jsonable(by_property),
+        "by_property_lead_band": _jsonable(by_property_lead),
     }
     return report, residual_bands, frame["residual"].reset_index(drop=True)
 
@@ -1004,6 +1015,10 @@ def run_end_to_end(
             metrics=metrics,
             kpis=kpis,
             actual=actual_series,
+            property_breakdown=breakdowns.get("property"),
+            model_by_property=model_by_property,
+            backtest_report=backtest_report,
+            champion=champion,
         )
     except Exception as exc:  # la vista jamás rompe la corrida
         print(f"[aviso] no se pudo generar report.html: {exc}")

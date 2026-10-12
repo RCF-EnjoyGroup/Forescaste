@@ -111,9 +111,14 @@ conexión) con las gráficas de revisión embebidas en base64:
 
 - **Forecast** · serie diaria del portafolio con banda P10/P50/P90
 - **Forecast vs Real** · superposición (solo en corridas de verificación, donde hay reales)
+- **Forecast por propiedad** · small multiples por hotel: P50, banda P10/P90,
+  techo de capacidad, reales y el modelo que opera cada propiedad
 - **Benchmark** · WMAPE por modelo, campeón destacado
 - **Pickup** · RN ya reservados por banda de anticipación
 - **Ocupación** · forecast contra el techo de capacidad
+- **Accuracy por propiedad** · barras de WMAPE + tabla con modelo, MAPE, bias y n
+- **Revisiones T-90..T-1** · WMAPE del backtest por propiedad y convergencia del
+  error por banda de lead (una línea por hotel)
 - **EDA** · volumen diario de room nights
 
 Es una **vista**: la lógica vive en `src/` (`reporting/visual_report.py`) y el
