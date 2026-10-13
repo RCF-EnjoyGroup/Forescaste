@@ -24,6 +24,7 @@ El sistema SHALL usar exclusivamente validación temporal (expanding window / ro
 - **THEN** la ventana usada para seleccionar el campeón no solapa la ventana de métricas publicada
 - **THEN** ambos períodos quedan declarados en el manifiesto
 
+
 ### Requirement: Evaluación multi-step por snapshot
 El sistema SHALL evaluar como en producción: congelar los datos disponibles por snapshot, generar el forecast sin acceso a datos futuros y comparar contra los Room Nights reales posteriormente observados.
 
@@ -91,7 +92,7 @@ El sistema SHALL reportar MAPE con las referencias: <10% excelente, 10–20% gen
 
 
 ### Requirement: Integridad del benchmark de candidatos
-El sistema SHALL evaluar cada candidato con un protocolo íntegro: features de entrenamiento sin el target de la propia fila, rollout multi-step con features as-of correctas, señal de pickup disponible para los candidatos que la soporten y el mismo techo de capacidad aplicado a todos.
+El sistema SHALL evaluar cada candidato con un protocolo íntegro: features de entrenamiento sin el target de la propia fila, rollout multi-step con features as-of correctas, señal de pickup disponible para los candidatos que la soporten y el mismo techo de capacidad aplicado a todos. El composite de selección SHALL ponderar los leads operativos (1 a 30 días) con mayor peso que los leads de planeación (31 a 89), de modo que un candidato plano no gane por "consistencia" en el rango largo mientras destruye el rango corto.
 
 #### Scenario: Features sin target en entrenamiento
 - **WHEN** un candidato ML entrena con features rolling
@@ -115,6 +116,15 @@ El sistema SHALL evaluar cada candidato con un protocolo íntegro: features de e
 - **WHEN** un candidato basado en curvas de pickup participa del benchmark
 - **THEN** su implementación de evaluación es representativa del modelo que operaría en producción (mismo grano y método), sin lo cual el candidato se retira del tablero
 
+#### Scenario: Composite ponderado por lead
+- **WHEN** el composite de selección calcula el score de un candidato
+- **THEN** los leads operativos (1-30) pesan al menos el doble por día que los leads de planeación (31-89)
+- **THEN** un candidato plano en día-de-semana no gana por consistencia en el rango largo si el rango corto muestra que destruye el patrón operativo de la propiedad
+
+#### Scenario: Sin desagregación de lead disponible
+- **WHEN** las métricas de fold no traen wmape_short/wmape_long
+- **THEN** el composite cae al WMAPE plano de la ventana completa (compatibilidad con corridas de muestra y tests)
+
 
 ### Requirement: Significancia estadística de la selección
 El sistema SHALL reportar si la ventaja del campeón sobre el subcampeón es estadísticamente distinguible del ruido, con la corrección de autocorrelación alineada al largo real de la ventana de evaluación.
@@ -131,6 +141,7 @@ El sistema SHALL reportar si la ventaja del campeón sobre el subcampeón es est
 #### Scenario: Corrección HAC al largo real de la ventana
 - **WHEN** las ventanas de fold cubren ``fold_horizon_days`` pasos hacia adelante
 - **THEN** la corrección de autocorrelación de la prueba usa ese largo (no un valor fijo menor), de modo que los errores multi-paso correlacionados no inflen la significancia
+
 
 ### Requirement: Cobertura de evaluación reportada
 El sistema SHALL reportar qué propiedades y fechas participan efectivamente en cada evaluación y cuáles quedan fuera, con el motivo.

@@ -75,6 +75,7 @@ from src.models.baselines import PickupCurveModel
 # (Antes 30d: la selección era ciega al régimen largo leads 30–90.)
 FOLD_HORIZON = 90  # ventana de cada fold (días)
 FOLD_SPACING = 90  # separación trimestral entre folds
+LEAD_SPLIT = 30  # leads 1-30 = operativo, 31+ = planeación (composite ponderado)
 ML_MIN_TRAIN_OBS = 60
 
 
@@ -207,11 +208,17 @@ def real_fold_metrics(
 
         for model in CANDIDATE_MODELS:
             for p in evaluated:
-                met = compute_metrics(
-                    actual_by_prop[p].to_numpy(),
-                    per_prop[p][model].reindex(actual_by_prop[p].index).to_numpy(),
-                )
-                rows.append({"model": model, "fold": fi, "property": p, **met.to_dict()})
+                act = actual_by_prop[p].to_numpy()
+                pred = per_prop[p][model].reindex(actual_by_prop[p].index).to_numpy()
+                met = compute_metrics(act, pred)
+                # desagregación por lead: wmape operativo (1-30) vs planeación (31-89)
+                met_short = compute_metrics(act[:LEAD_SPLIT], pred[:LEAD_SPLIT])
+                met_long = compute_metrics(act[LEAD_SPLIT:], pred[LEAD_SPLIT:])
+                rows.append({
+                    "model": model, "fold": fi, "property": p,
+                    **met.to_dict(),
+                    "wmape_short": met_short.wmape, "wmape_long": met_long.wmape,
+                })
             if common is not None and len(common) > 0:
                 port_pred = pd.concat(
                     [per_prop[p][model].reindex(common) for p in evaluated], axis=1
@@ -219,9 +226,16 @@ def real_fold_metrics(
                 port_actual = pd.concat(
                     [actual_by_prop[p].reindex(common) for p in evaluated], axis=1
                 ).sum(axis=1)
-                met = compute_metrics(port_actual.to_numpy(), port_pred.to_numpy())
-                rows.append({"model": model, "fold": fi, "property": PORTFOLIO, **met.to_dict()})
-                for d, a, f in zip(common, port_actual.to_numpy(), port_pred.to_numpy()):
+                pa, pp = port_actual.to_numpy(), port_pred.to_numpy()
+                met = compute_metrics(pa, pp)
+                met_short = compute_metrics(pa[:LEAD_SPLIT], pp[:LEAD_SPLIT])
+                met_long = compute_metrics(pa[LEAD_SPLIT:], pp[LEAD_SPLIT:])
+                rows.append({
+                    "model": model, "fold": fi, "property": PORTFOLIO,
+                    **met.to_dict(),
+                    "wmape_short": met_short.wmape, "wmape_long": met_long.wmape,
+                })
+                for d, a, f in zip(common, pa, pp):
                     errors.append(
                         {"model": model, "fold": fi, "stay_date": d, "actual": a, "forecast": f}
                     )

@@ -25,6 +25,11 @@ from src.evaluation.metrics import diebold_mariano
 BIAS_PENALTY = 0.5  # peso de |bias| relativo al WMAPE en el score compuesto
 STABILITY_WEIGHT = 0.25  # peso de la volatilidad del WMAPE entre ventanas
 MIN_FOLDS_PER_PROPERTY = 3
+# composite ponderado por lead: los leads operativos (1-30) pesan ~2.8x por
+# día que los de planeación (31-89) — un candidato plano no gana por
+# "consistencia" en el rango largo mientras destruye el patrón del corto
+LEAD_ALPHA = 0.65
+LEAD_SPLIT = 30
 # etiqueta de la fila agregada del portafolio en fold_metrics: NO participa
 # de la selección global (efecto Simpson: el agregado oculta el error de las
 # propiedades chicas) ni de la selección por propiedad
@@ -56,11 +61,19 @@ class CandidateScore:
     n_folds: int
     rmse: float = float("nan")
     composite: float = 0.0
+    wmape_short: float = float("nan")  # leads 1-30 (operativo)
+    wmape_long: float = float("nan")   # leads 31-89 (planeación)
 
     def __post_init__(self) -> None:
-        # score compuesto: menor es mejor; el MAPE no entra (spec: no decide)
+        # score compuesto: menor es mejor; el MAPE no entra (spec: no decide).
+        # Con desagregación de lead: pondera operativo (0.65) vs planeación
+        # (0.35) — un modelo plano en día-de-semana no gana por "consistencia"
+        # en el rango largo si destruye el patrón operativo del corto.
+        wmape_score = self.wmape
+        if np.isfinite(self.wmape_short) and np.isfinite(self.wmape_long):
+            wmape_score = LEAD_ALPHA * self.wmape_short + (1 - LEAD_ALPHA) * self.wmape_long
         self.composite = (
-            self.wmape
+            wmape_score
             + BIAS_PENALTY * abs(self.bias)
             + STABILITY_WEIGHT * self.stability
         )
@@ -91,6 +104,8 @@ class SelectionResult:
                 "stability": s.stability,
                 "n_folds": s.n_folds,
                 "composite": s.composite,
+                "wmape_short": s.wmape_short,
+                "wmape_long": s.wmape_long,
             }
             for s in self.ranking
         ]
@@ -113,6 +128,7 @@ def score_candidates(
 
     scores: list[CandidateScore] = []
     has_rmse = "rmse" in fold_metrics.columns
+    has_lead_split = {"wmape_short", "wmape_long"} <= set(fold_metrics.columns)
     for model, grp in fold_metrics.groupby(model_col):
         stability = float(grp["wmape"].std()) if len(grp) > 1 else 0.0
         scores.append(
@@ -125,6 +141,12 @@ def score_candidates(
                 stability=stability,
                 n_folds=int(len(grp)),
                 rmse=float(grp["rmse"].mean()) if has_rmse else float("nan"),
+                wmape_short=(
+                    float(grp["wmape_short"].mean()) if has_lead_split else float("nan")
+                ),
+                wmape_long=(
+                    float(grp["wmape_long"].mean()) if has_lead_split else float("nan")
+                ),
             )
         )
     return scores
