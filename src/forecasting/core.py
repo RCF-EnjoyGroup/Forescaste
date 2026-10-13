@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
 from src.data.schema import SourceSchema
 from src.models.baselines import PickupCurveModel, SeasonalNaive
 from src.models.candidates import (
@@ -78,7 +79,7 @@ def _normalize_demand(df: pd.DataFrame, schema: SourceSchema) -> pd.DataFrame:
     out = pd.DataFrame(
         {
             "property": df[schema.property_col].astype(str),
-            "stay_date": pd.to_datetime(df[schema.date_col], errors="coerce"),
+            "stay_date": parse_dates_flexible(df[schema.date_col]),
             "room_nights": pd.to_numeric(df[schema.col("demand")], errors="coerce"),
         }
     )
@@ -86,10 +87,16 @@ def _normalize_demand(df: pd.DataFrame, schema: SourceSchema) -> pd.DataFrame:
 
 
 def _normalize_capacity(df: pd.DataFrame, schema: SourceSchema) -> pd.DataFrame:
+    """Canon (property, stay_date, capacity).
+
+    El capacity real llega en DD/MM/YYYY (estándar del negocio): el
+    parser flexible evita descartar el ~60% de fechas por día > 12 y
+    cruzar día/mes en las ambiguas (spec data-ingestion).
+    """
     out = pd.DataFrame(
         {
             "property": df[schema.property_col].astype(str),
-            "stay_date": pd.to_datetime(df[schema.date_col], errors="coerce"),
+            "stay_date": parse_dates_flexible(df[schema.date_col]),
             "capacity": pd.to_numeric(df[schema.col("capacity")], errors="coerce"),
         }
     )
@@ -98,13 +105,13 @@ def _normalize_capacity(df: pd.DataFrame, schema: SourceSchema) -> pd.DataFrame:
 
 def _normalize_pickup(df: pd.DataFrame, schema: SourceSchema) -> pd.DataFrame:
     prop = df[schema.property_col].astype(str)
-    stay = pd.to_datetime(df[schema.date_col], errors="coerce")
+    stay = parse_dates_flexible(df[schema.date_col])
     lead_col = schema.roles.get("lead")
     has_lead_col = bool(lead_col) and lead_col != "__derived__" and lead_col in df.columns
     lead = pd.to_numeric(df[lead_col], errors="coerce") if has_lead_col else None
     snap_col = schema.roles.get("snapshot")
     if snap_col and snap_col != "__derived__" and snap_col in df.columns:
-        snap = pd.to_datetime(df[snap_col], errors="coerce")
+        snap = parse_dates_flexible(df[snap_col])
     elif lead is not None:
         # snapshot derivado: la reserva se observó (stay - lead) días antes
         snap = stay - pd.to_timedelta(lead, unit="D")

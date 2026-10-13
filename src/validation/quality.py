@@ -12,6 +12,7 @@ from typing import Literal
 
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
 from src.data.schema import SourceKind, SourceSchema
 
 Severity = Literal["error", "warning"]
@@ -71,6 +72,44 @@ def _issues(
 # ---------------------------------------------------------------- -----------
 
 
+def _nullish(column: pd.Series) -> pd.Series:
+    """NaN real o placeholder de nulo stringificado ('nan' tras astype(str)).
+
+    ``_apply_aliases`` stringifica la columna de propiedad, por lo que una
+    fila vacía del CSV llega con property='nan' y el resto NaN: ``isna``
+    solo no la detecta.
+    """
+    if pd.api.types.is_datetime64_any_dtype(column):
+        return column.isna()
+    if pd.api.types.is_numeric_dtype(column):
+        return column.isna()
+    return column.isna() | (
+        column.astype(str).str.strip().str.lower().isin({"nan", "none", ""})
+    )
+
+
+def check_empty_rows(df: pd.DataFrame) -> tuple[list[QualityIssue], pd.DataFrame]:
+    """Filas completamente vacías (artefactos de exportación) → advertencia.
+
+    Se excluyen de los demás checks: ``duplicated`` contaría NaN == NaN
+    como duplicados (error espurio) y el análisis de huecos crashearía
+    con grupos todo-NaT. Es higiene de datos, no corrupción: no detiene
+    la corrida, pero queda reportado para Sistemas.
+    """
+    if df.empty:
+        return [], df
+    empty = pd.concat([_nullish(df[c]) for c in df.columns], axis=1).all(axis=1)
+    empty.index = df.index
+    if not bool(empty.any()):
+        return [], df
+    issue = QualityIssue(
+        check="empty_rows", severity="warning",
+        message=f"Filas completamente vacías: {int(empty.sum())} registros",
+        records=int(empty.sum()),
+    )
+    return [issue], df.loc[~empty].copy()
+
+
 def check_duplicates(df: pd.DataFrame, schema: SourceSchema) -> list[QualityIssue]:
     """(propiedad, fecha) duplicados → error.
 
@@ -115,9 +154,14 @@ def check_zero_capacity(df: pd.DataFrame, schema: SourceSchema) -> list[QualityI
 
 
 def check_missing_dates(df: pd.DataFrame, schema: SourceSchema) -> list[QualityIssue]:
-    """Huecos en la serie diaria por propiedad → advertencia."""
+    """Huecos en la serie diaria por propiedad → advertencia.
+
+    Las fechas se parsean con el parser flexible (ISO/DD-MM, spec
+    data-ingestion); las presentes pero ilegibles para todo formato se
+    reportan como error por grupo — sin crash.
+    """
     issues: list[QualityIssue] = []
-    dates = pd.to_datetime(df[schema.date_col], errors="coerce")
+    dates = parse_dates_flexible(df[schema.date_col])
     if dates.isna().all():
         return [
             QualityIssue(
@@ -127,6 +171,19 @@ def check_missing_dates(df: pd.DataFrame, schema: SourceSchema) -> list[QualityI
             )
         ]
     for prop, grp in df.assign(_date=dates).groupby(schema.property_col, dropna=False):
+        if grp["_date"].isna().all():
+            issues.append(
+                QualityIssue(
+                    check="missing_dates", severity="error",
+                    message=(
+                        f"Propiedad '{prop}': fechas presentes pero ilegibles "
+                        f"en {len(grp)} registros"
+                    ),
+                    records=len(grp),
+                    properties=(str(prop),),
+                )
+            )
+            continue
         full = pd.date_range(grp["_date"].min(), grp["_date"].max(), freq="D")
         gaps = full.difference(pd.DatetimeIndex(grp["_date"].dropna().unique()))
         if len(gaps):
@@ -149,7 +206,7 @@ def check_capacity_change(df: pd.DataFrame, schema: SourceSchema) -> list[Qualit
         return []
     col = schema.col("capacity")
     work = df[[schema.property_col, schema.date_col, col]].copy()
-    work[schema.date_col] = pd.to_datetime(work[schema.date_col], errors="coerce")
+    work[schema.date_col] = parse_dates_flexible(work[schema.date_col])
     work = work.sort_values([schema.property_col, schema.date_col])
     prev = work.groupby(schema.property_col)[col].shift(1)
     delta = (work[col] - prev).abs()
@@ -180,8 +237,8 @@ def check_invalid_lead(df: pd.DataFrame, schema: SourceSchema) -> list[QualityIs
     elif lead_col == "__derived__":
         snap = schema.roles.get("snapshot")
         if snap and snap != "__derived__":
-            stay = pd.to_datetime(df[schema.date_col], errors="coerce")
-            snapshot = pd.to_datetime(df[snap], errors="coerce")
+            stay = parse_dates_flexible(df[schema.date_col])
+            snapshot = parse_dates_flexible(df[snap])
             derived = (stay - snapshot).dt.days
             issues += _issues(
                 "negative_lead", "error", "Lead time negativo (stay < snapshot)",
@@ -214,8 +271,8 @@ def check_pickup_inconsistency(df: pd.DataFrame, schema: SourceSchema) -> list[Q
     lead_col = schema.roles.get("lead")
     if not snap or snap == "__derived__" or not lead_col or lead_col == "__derived__":
         return []
-    stay = pd.to_datetime(df[schema.date_col], errors="coerce")
-    snapshot = pd.to_datetime(df[snap], errors="coerce")
+    stay = parse_dates_flexible(df[schema.date_col])
+    snapshot = parse_dates_flexible(df[snap])
     expected = (stay - snapshot).dt.days
     actual = pd.to_numeric(df[lead_col], errors="coerce")
     mismatch = expected.notna() & actual.notna() & (expected != actual)
@@ -238,11 +295,9 @@ def check_rn_over_capacity(
     c_col = capacity_schema.col("capacity")
     demand = demand_df[[demand_schema.property_col, demand_schema.date_col, d_col]].copy()
     capacity = capacity_df[[capacity_schema.property_col, capacity_schema.date_col, c_col]].copy()
-    demand[demand_schema.date_col] = pd.to_datetime(
-        demand[demand_schema.date_col], errors="coerce"
-    )
-    capacity[capacity_schema.date_col] = pd.to_datetime(
-        capacity[capacity_schema.date_col], errors="coerce"
+    demand[demand_schema.date_col] = parse_dates_flexible(demand[demand_schema.date_col])
+    capacity[capacity_schema.date_col] = parse_dates_flexible(
+        capacity[capacity_schema.date_col]
     )
     merged = demand.merge(
         capacity,
@@ -284,7 +339,12 @@ def check_rn_over_capacity(
 
 
 def validate_source(df: pd.DataFrame, schema: SourceSchema) -> list[QualityIssue]:
-    """Corre todos los checks aplicables a una fuente individual."""
+    """Corre todos los checks aplicables a una fuente individual.
+
+    Las filas completamente vacías se reportan como advertencia de
+    higiencia y se excluyen de los demás checks (ver
+    :func:`check_empty_rows`).
+    """
     issues: list[QualityIssue] = []
     if df.empty:
         return [
@@ -293,6 +353,10 @@ def validate_source(df: pd.DataFrame, schema: SourceSchema) -> list[QualityIssue
                 message=f"Fuente '{schema.kind.value}' sin registros", records=0,
             )
         ]
+    empty_issues, df = check_empty_rows(df)
+    issues += empty_issues
+    if df.empty:
+        return issues
     issues += check_duplicates(df, schema)
     issues += check_negative_demand(df, schema)
     issues += check_negative_capacity(df, schema)

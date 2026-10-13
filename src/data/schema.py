@@ -15,6 +15,7 @@ from enum import Enum
 import pandas as pd
 
 from src.config import load_config
+from src.data.dates import parse_dates_flexible
 
 
 class SourceKind(str, Enum):
@@ -62,13 +63,15 @@ class SourceSchema:
         """Normaliza dtypes según el esquema: fechas a datetime, métricas a numérico.
 
         Si ``lead`` es derivable (stay_date - snapshot_date) la agrega como
-        ``lead_days``. Columnas no mapeadas se conservan intactas.
+        ``lead_days``. Columnas no mapeadas se conservan intactas. Las fechas
+        se parsean con :func:`src.data.dates.parse_dates_flexible` (ISO y
+        DD/MM, spec data-ingestion).
         """
         out = df.copy()
-        out[self.roles["date"]] = pd.to_datetime(out[self.roles["date"]], errors="coerce")
+        out[self.roles["date"]] = parse_dates_flexible(out[self.roles["date"]])
         snap = self.roles.get("snapshot") if self.kind is SourceKind.PICKUP else None
         if snap and snap != "__derived__":
-            out[snap] = pd.to_datetime(out[snap], errors="coerce")
+            out[snap] = parse_dates_flexible(out[snap])
         for role, col in self.roles.items():
             if role in ("property", "date", "snapshot") or col == "__derived__":
                 continue
@@ -94,7 +97,7 @@ def _is_date_like(series: pd.Series) -> bool:
         if sample.empty:
             return False
         try:
-            parsed = pd.to_datetime(sample, format="mixed", dayfirst=False)
+            parsed = parse_dates_flexible(sample)
             return bool(parsed.notna().mean() >= 0.9)
         except (ValueError, TypeError):
             return False

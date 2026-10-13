@@ -102,7 +102,7 @@ Reglas del loader (falla la corrida antes de entrenar si no se cumplen):
 | Regla | Detalle |
 |---|---|
 | Columnas | `event_name` (o `evento`/`nombre`), `event_date` (o `fecha`), `property` opcional (o `propiedad`/`hotel`) |
-| Fechas | `YYYY-MM-DD`; una fecha ilegible **detiene la corrida** con el número de filas afectadas |
+| Fechas | `YYYY-MM-DD` o `DD/MM/YYYY` (detecta por columna); una fecha ilegible para ambos formatos **detiene la corrida** con el número de filas afectadas |
 | Duplicados | (nombre + fecha + propiedad) — **detienen la corrida** con ejemplos |
 | `property` | Nombre canónico (mismos nombres que en `demand_daily.csv`); vacío/NaN = evento de portafolio |
 | Alcance temporal | Eventos futuros Y pasados: los pasados alimentan las curvas de pickup por ventana de evento (dentro de la ventana de recencia de 3 años) |
@@ -119,10 +119,10 @@ evento con `property` asignada solo afecta a esa propiedad.
 | Regla | Detalle |
 |---|---|
 | Encoding | UTF-8, separador coma, sin BOM |
-| Fechas | `YYYY-MM-DD` |
+| Fechas | `YYYY-MM-DD` (ISO) recomendado. El motor también acepta `DD/MM/YYYY` — estándar del negocio — en `capacity_daily`: detecta el formato por columna y elige el que resuelve más fechas, sin configuración. **Importante**: usar UN formato consistente por columna, sin mezclar |
 | Nombres de columnas | **EXACTOS** como en cada query (el loader valida) |
 | `room_revenue` | El query ya lo convierte a número con punto decimal — **no reformatear después** |
-| Sin filas extra | Ni totales, ni encabezados duplicados, ni filas de notas |
+| Sin filas extra | Ni totales, ni encabezados duplicados, ni filas de notas. Las filas completamente vacías (`,,`) se reportan como advertencia `empty_rows` y se ignoran, pero indican un export con ruido — conviene eliminarlas |
 
 **Columnas esperadas por archivo:**
 

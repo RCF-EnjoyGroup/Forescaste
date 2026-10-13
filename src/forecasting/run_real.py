@@ -83,8 +83,8 @@ ML_MIN_TRAIN_OBS = 60
 # carga de las tres fuentes reales (crudas; el runner aplica alias/esquema)
 # --------------------------------------------------------------------------
 
-def load_real_sources() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Lee los CSVs reales y devuelve (demand, capacity, pickup, demand_aliased).
+def load_real_sources() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Lee los CSVs reales y devuelve (demand, capacity, pickup, demand_aliased, capacity_aliased).
 
     Las propiedades cerradas (``data.excluded_properties``) se filtran tras
     resolver alias: no cruzan al benchmark ni a la corrida end-to-end.
@@ -113,7 +113,7 @@ def load_real_sources() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Da
     dem = _normalize_demand(demand, dem_schema)
     cap = _normalize_capacity(capacity, cap_schema)
     pick = _normalize_pickup(pickup, pk_schema)
-    return dem, cap, pick, demand
+    return dem, cap, pick, demand, capacity
 
 
 # --------------------------------------------------------------------------
@@ -316,7 +316,7 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.time()
     cfg = load_config()
     print("[1/5] Leyendo fuentes reales...")
-    dem, cap, pick, demand_raw = load_real_sources()
+    dem, cap, pick, demand_raw, capacity_raw = load_real_sources()
     max_stay = pd.Timestamp(dem["stay_date"].max())
 
     if args.futuro:
@@ -410,7 +410,12 @@ def main(argv: list[str] | None = None) -> int:
     print("[4/5] Corrida end-to-end completa (campeón opera + backtest T-90..T-1)...")
     result = run_end_to_end(
         demand=demand_raw,
-        capacity=cap,
+        # capacity crudo (post alias/exclusión): el gate de calidad ve la
+        # fuente real — filas vacías incluidas — y el runner normaliza de
+        # forma idempotente. Con el frame pre-normalizado, la basura de
+        # exportación se caía en el dropna ANTES del gate y Sistemas no
+        # se enteraba (spec data-ingestion: validar antes de entrenar).
+        capacity=capacity_raw,
         pickup=pick,
         run_dir=Path("outputs") / "runs" / f"{run_kind}-{pd.Timestamp.now():%Y%m%d-%H%M}",
         config=cfg,

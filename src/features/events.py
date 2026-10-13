@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
+
 _NAME_CANDIDATES = ("event_name", "evento", "event", "nombre", "name")
 _DATE_CANDIDATES = ("event_date", "fecha", "date", "dia")
 _PROPERTY_CANDIDATES = ("property", "propiedad", "hotel", "hotel_id")
@@ -62,7 +64,11 @@ def load_events(path: str | Path) -> pd.DataFrame | None:
     out = pd.DataFrame(
         {
             "event_name": df[name_col].astype(str).str.strip(),
-            "event_date": pd.to_datetime(df[date_col], errors="coerce"),
+            # ISO o DD/MM (estándar del negocio): mismo parser flexible que
+            # las fuentes principales — "05/10/2026" es 5-oct, no 10-may.
+            # prefer_dayfirst: un events.csv corto puede ser 100% ambiguo
+            # (día ≤ 12) y el conteo solo no puede desambiguar.
+            "event_date": parse_dates_flexible(df[date_col], prefer_dayfirst=True),
         }
     )
     if prop_col is not None:
@@ -74,7 +80,8 @@ def load_events(path: str | Path) -> pd.DataFrame | None:
     bad_dates = out["event_date"].isna().sum()
     if bad_dates:
         raise EventsError(
-            f"events.csv: {bad_dates} filas con fecha ilegible (formato esperado YYYY-MM-DD)"
+            f"events.csv: {bad_dates} filas con fecha ilegible "
+            f"(formatos aceptados: YYYY-MM-DD o DD/MM/YYYY)"
         )
     dup_mask = out.duplicated(subset=["event_name", "event_date", "property"])
     if dup_mask.any():
