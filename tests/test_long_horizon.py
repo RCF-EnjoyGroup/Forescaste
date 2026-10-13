@@ -337,7 +337,7 @@ def test_add_demand_features_preserva_indice():
     assert fitted.artifact.min_stays_per_bucket == 30
 
     # build_forecasts propaga los mismos parámetros
-    grid, fitted_map = build_forecasts(
+    grid, fitted_map, _blend = build_forecasts(
         {"corin": "pickup_curve"}, dem, pick, c, 30,
         curve_params={"season_conditional": True, "n_bins": 4},
     )

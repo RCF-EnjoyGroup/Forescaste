@@ -65,6 +65,7 @@ from src.forecasting.core import (  # re-exportados para tests/CLI
     BACKTEST_LEADS_EXPENSIVE,
     CHEAP_MODELS,
     FittedCandidate,
+    ML_FACTORIES,
     _apply_aliases,
     _booked_requests,
     _normalize_capacity,
@@ -680,7 +681,7 @@ def run_end_to_end(
 
     # ---------- 5. forecast del horizonte con el campeón (por propiedad)
     curve_params = dict(config.pickup_curve)
-    raw, fitted_models = build_forecasts(
+    raw, fitted_models, blend_by_property = build_forecasts(
         model_by_property, history, pick, cutoff, horizon_days,
         curve_params, holiday_cal,
     )
@@ -884,6 +885,7 @@ def run_end_to_end(
         hyperparameters={
             "model": champion,
             "per_property": model_by_property,
+            "per_property_blend": _jsonable(blend_by_property) if blend_by_property else {},
             "horizon_days": horizon_days,
             "pickup_curve": _jsonable(curve_params),
             "holidays": _jsonable(

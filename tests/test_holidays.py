@@ -247,7 +247,7 @@ def test_calendario_llega_al_candidato_ml_y_a_la_curva():
     )
     assert fitted_pu.artifact.holiday_calendar is cal
 
-    grid, fitted_map = build_forecasts(
+    grid, fitted_map, _blend = build_forecasts(
         {"corin": "pickup_curve"}, dem, pick, c, 30,
         curve_params={"holiday_conditional": True, "n_bins": 4},
         holiday_calendar=cal,

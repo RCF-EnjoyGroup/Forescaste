@@ -28,7 +28,7 @@ El sistema SHALL modelar la demanda de Room Nights como variable objetivo; Reven
 
 
 ### Requirement: Champion/challenger con candidatos obligatorios
-El sistema SHALL evaluar como mínimo: Seasonal Naive (baseline obligatorio), Pickup Curve basado en `Current Bookings + Expected Remaining Pickup` (baseline obligatorio), ETS, SARIMAX, LightGBM, XGBoost y CatBoost; el campeón resultante SHALL ser el modelo que genera el forecast de la corrida.
+El sistema SHALL evaluar como mínimo: Seasonal Naive (baseline obligatorio), Pickup Curve basado en `Current Bookings + Expected Remaining Pickup` (baseline obligatorio), ETS, SARIMAX, LightGBM, XGBoost y CatBoost; el campeón resultante SHALL ser el modelo que genera el forecast de la corrida. Cuando el campeón es un modelo ML con rollout recursivo, el forecast SHALL hacer blend por lead: el ML opera los leads 1-30 (donde sus lags son reales y captura el patrón de corto plazo) y la curva de pickup opera los leads 31+ (donde el rollout del ML degrada al realimentar sus propias predicciones como lags).
 
 #### Scenario: Baselines presentes
 - **WHEN** se ejecuta el benchmark de modelos
@@ -45,6 +45,12 @@ El sistema SHALL evaluar como mínimo: Seasonal Naive (baseline obligatorio), Pi
 - **THEN** el forecast de esa corrida lo genera el modelo campeón (sin modelo de producción fijado en el código)
 - **THEN** el manifiesto, la tabla de forecast y el dataset Power BI declaran el mismo campeón que el benchmark
 - **THEN** ningún entregable de la misma corrida declara un campeón distinto de otro
+
+#### Scenario: Campeón GBM con blend por lead
+- **WHEN** el campeón de una propiedad es un modelo ML con rollout recursivo (GBM)
+- **THEN** las fechas con lead ≤ 30 usan la predicción del GBM (captura el patrón de corto plazo)
+- **THEN** las fechas con lead > 30 usan la predicción de la curva de pickup (inmune a la degradación del rollout)
+- **THEN** el manifiesto declara qué propiedades operan con blend
 
 #### Scenario: Modelo operativo identificable
 - **WHEN** se consume cualquier entregable de forecast

@@ -507,6 +507,17 @@ def predict_candidate(
     return out.reset_index()
 
 
+# blend de GBM con pickup_curve: el rollout recursivo del GBM degrada en
+# leads largos (predicciones se realimentan como lags); la curva calcula
+# cada fecha independientemente y no colapsa. Split en el mismo umbral
+# que el composite ponderado por lead.
+BLEND_LEAD_SPLIT = 30
+# umbral de colapso del rollout: si la media de las predicciones a largo
+# lead cae por debajo de RATIO × la media de corto lead, la cascada de
+# realimentacion esta destruyendo el forecast y la curva toma el relevo
+BLEND_COLLAPSE_RATIO = 0.85
+
+
 def build_forecasts(
     model_by_property: dict[str, str],
     dem: pd.DataFrame,
@@ -515,15 +526,21 @@ def build_forecasts(
     horizon_days: int,
     curve_params: dict | None = None,
     holiday_calendar: Any = None,
-) -> tuple[pd.DataFrame, dict[str, FittedCandidate]]:
+) -> tuple[pd.DataFrame, dict[str, FittedCandidate], dict]:
     """Despacha el forecast del horizonte con el modelo ganador por propiedad.
+
+    Auto-diagnóstico del rollout: cuando el campeón es un GBM y su
+    predicción a largo lead colapsa (media larga < 0.80 × media corta),
+    el rollout recursivo se está realimentando y destruyendo el forecast.
+    En ese caso, las fechas con lead > ``BLEND_LEAD_SPLIT`` usan la curva
+    de pickup (inmune a la cascada por calcular cada fecha independientemente).
+    La decisión es por propiedad, en vivo, sin configuración del usuario.
 
     Returns
     -------
-    (grid_frame, fitted_by_property):
-        ``grid_frame``: property/stay_date/lead_days/current_booked_rn/
-        raw_forecast_rn/expected_pickup_rn/model_name — una fila por
-        (propiedad, fecha de estancia del horizonte).
+    (grid_frame, fitted_by_property, blend_by_property):
+        ``blend_by_property``: {prop: {..., "trigger": ...}} para
+        propiedades con blend activado por colapso del rollout.
     """
     cutoff = pd.Timestamp(cutoff)
     horizon_dates = pd.date_range(
@@ -531,6 +548,8 @@ def build_forecasts(
     )
     frames: list[pd.DataFrame] = []
     fitted_by_property: dict[str, FittedCandidate] = {}
+    blend_by_property: dict = {}
+
     for prop in sorted(model_by_property):
         model_name = model_by_property[prop]
         dem_p = dem.loc[dem["property"] == prop]
@@ -543,16 +562,66 @@ def build_forecasts(
         pred["property"] = prop
         pred["model_name"] = model_name
         pred["lead_days"] = (pred["stay_date"] - cutoff).dt.days.clip(lower=1)
+
+        # blend auto-diagnóstico: si el rollout del GBM colapsa a largo
+        # lead (cuartil inferior de las predicciones largas << el de las
+        # cortas), la cascada de predicciones realimentadas está destruyendo
+        # los valles de dia-de-semana — la curva lo rescata. Se usa el
+        # percentil 25 (no la media) porque el colapso se concentra en los
+        # valles (mar-jue) mientras los picos (vie-dom) quedan estables y
+        # diluirian la media.
+        if model_name in ML_FACTORIES and not fitted.cold_start():
+            short_vals = pred.loc[
+                pred["lead_days"] <= BLEND_LEAD_SPLIT, "raw_forecast_rn"
+            ]
+            long_vals = pred.loc[
+                pred["lead_days"] > BLEND_LEAD_SPLIT, "raw_forecast_rn"
+            ]
+            rollout_collapsed = False
+            if len(short_vals) > 0 and len(long_vals) > 0:
+                short_q25 = float(short_vals.quantile(0.25))
+                long_q25 = float(long_vals.quantile(0.25))
+                rollout_collapsed = long_q25 < short_q25 * BLEND_COLLAPSE_RATIO
+            if rollout_collapsed:
+                fitted_curve = fit_candidate(
+                    "pickup_curve", dem_p, pick_p, cutoff, horizon_days,
+                    curve_params, holiday_calendar,
+                )
+                if not fitted_curve.cold_start():
+                    pred_curve = predict_candidate(fitted_curve, pick_p, horizon_dates)
+                    long_mask = pred["lead_days"] > BLEND_LEAD_SPLIT
+                    if long_mask.any():
+                        pred.loc[long_mask, "raw_forecast_rn"] = (
+                            pred_curve.loc[long_mask, "raw_forecast_rn"].to_numpy()
+                        )
+                        pred.loc[long_mask, "model_name"] = (
+                            f"{model_name}+pickup_curve(blend>{BLEND_LEAD_SPLIT})"
+                        )
+                    blend_by_property[prop] = {
+                        "short_model": model_name,
+                        "long_model": "pickup_curve",
+                        "blend_split": BLEND_LEAD_SPLIT,
+                        "trigger": (
+                            f"rollout_collapse(q25_long={long_q25:.0f} < "
+                            f"q25_short*{BLEND_COLLAPSE_RATIO}={short_q25 * BLEND_COLLAPSE_RATIO:.0f})"
+                        ),
+                    }
+
         frames.append(pred)
+
     if not frames:
-        return pd.DataFrame(
-            columns=[
+        return (
+            pd.DataFrame(columns=[
                 "property", "stay_date", "lead_days", "current_booked_rn",
                 "raw_forecast_rn", "expected_pickup_rn", "model_name",
-            ]
-        ), fitted_by_property
+            ]),
+            fitted_by_property,
+            blend_by_property,
+        )
     grid = pd.concat(frames, ignore_index=True)
-    return grid[
-        ["property", "stay_date", "lead_days", "current_booked_rn",
-         "raw_forecast_rn", "expected_pickup_rn", "model_name"]
-    ], fitted_by_property
+    return (
+        grid[["property", "stay_date", "lead_days", "current_booked_rn",
+              "raw_forecast_rn", "expected_pickup_rn", "model_name"]],
+        fitted_by_property,
+        blend_by_property,
+    )
