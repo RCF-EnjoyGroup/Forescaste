@@ -28,7 +28,7 @@ El sistema SHALL modelar la demanda de Room Nights como variable objetivo; Reven
 
 
 ### Requirement: Champion/challenger con candidatos obligatorios
-El sistema SHALL evaluar como mínimo: Seasonal Naive (baseline obligatorio), Pickup Curve basado en `Current Bookings + Expected Remaining Pickup` (baseline obligatorio), ETS, SARIMAX, LightGBM, XGBoost y CatBoost; el campeón resultante SHALL ser el modelo que genera el forecast de la corrida. Cuando el campeón es un modelo ML con rollout recursivo y el auto-diagnóstico detecta colapso del rollout a largo lead, el sistema SHALL elegir el reemplazo de los leads largos por evidencia: el candidato con mejor `wmape_long` en los folds de esa propiedad, y solo cuando sea materialmente mejor que el propio campeón; sin esa evidencia el campeón conserva su rollout completo.
+El sistema SHALL evaluar como mínimo: Seasonal Naive (baseline obligatorio), Pickup Curve basado en `Current Bookings + Expected Remaining Pickup` (baseline obligatorio), ETS, SARIMAX, LightGBM, XGBoost y CatBoost; el campeón resultante SHALL ser el modelo que genera el forecast de la corrida. Cuando el campeón es un modelo ML con rollout recursivo y el auto-diagnóstico detecta colapso del rollout a largo lead, el sistema SHALL elegir el reemplazo de los leads largos por evidencia: el candidato con mejor `wmape_long` en los folds de esa propiedad, y solo cuando sea materialmente mejor que el propio campeón; sin esa evidencia el campeón conserva su rollout completo. Cuando el reemplazo elegido es un modelo sin patrón semanal a largo horizonte (SARIMAX/ETS), el segmento empalmado SHALL combinar el nivel del candidato con el perfil DOW de la propiedad calculado as-of de su historia reciente.
 
 #### Scenario: Baselines presentes
 - **WHEN** se ejecuta el benchmark de modelos
@@ -51,6 +51,12 @@ El sistema SHALL evaluar como mínimo: Seasonal Naive (baseline obligatorio), Pi
 - **THEN** las fechas con lead ≤ 30 usan la predicción del campeón ML (captura el patrón de corto plazo)
 - **THEN** las fechas con lead > 30 usan la predicción del candidato con mejor `wmape_long` en los folds de esa propiedad — que puede ser cualquier candidato del tablero, no un modelo fijado — siempre que sea materialmente mejor que el propio campeón
 - **THEN** el manifiesto declara qué propiedades operan con blend, el modelo largo elegido y la evidencia numérica de la elección
+
+#### Scenario: Reemplazo plano con perfil DOW
+- **WHEN** el reemplazo largo elegido es un modelo stats cuyo forecast a largo horizonte es plano (sin patrón semanal)
+- **THEN** el segmento empalmado combina el NIVEL del candidato con el PERFIL DOW de la propiedad (media por día-de-semana de su historia reciente ≤ corte, normalizada)
+- **THEN** el patrón se calcula solo con historia as-of: sin leer reales posteriores al corte
+- **THEN** con historia insuficiente para un perfil estable, el segmento queda plano y el manifiesto lo declara
 
 #### Scenario: Colapso del rollout sin reemplazo mejor
 - **WHEN** el rollout del campeón ML colapsa Y ningún candidato supera materialmente el `wmape_long` del propio campeón

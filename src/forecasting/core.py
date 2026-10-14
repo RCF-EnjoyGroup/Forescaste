@@ -528,6 +528,49 @@ BLEND_COLLAPSE_RATIO = 0.85
 # la heterogeneidad de modelos dentro del horizonte (spec forecasting:
 # el reemplazo se elige por evidencia, no por defecto)
 BLEND_ACCURACY_MARGIN = 0.95
+# perfil DOW para reemplazos planos: el nivel del mejor modelo largo
+# (stats, plano a 60-90 pasos) se multiplica por el ritmo semanal de la
+# propiedad — media por día-de-semana de los últimos 12 semanas as-of,
+# normalizada a media 1. El nivel viene de la evidencia; el patrón, de
+# la historia (conocible a cualquier lead, sin lookahead)
+DOW_PROFILE_DAYS = 84
+DOW_MIN_OBS_PER_DOW = 3
+
+
+def _dow_profile(
+    dem_p: pd.DataFrame,
+    cutoff: pd.Timestamp,
+    days: int = DOW_PROFILE_DAYS,
+    min_obs_per_dow: int = DOW_MIN_OBS_PER_DOW,
+) -> pd.Series | None:
+    """Perfil DOW normalizado (media 1) de la historia reciente as-of.
+
+    El ritmo semanal de una propiedad es un hecho operativo conocible a
+    cualquier lead desde historia ≤ corte. Devuelve ``None`` si la
+    historia no alcanza para un perfil estable: el caller deja el
+    segmento plano y lo declara en el manifiesto.
+    """
+    if dem_p is None or dem_p.empty:
+        return None
+    cutoff = pd.Timestamp(cutoff)
+    hist = dem_p.loc[
+        (dem_p["stay_date"] > cutoff - pd.Timedelta(days=int(days)))
+        & (dem_p["stay_date"] <= cutoff),
+        ["stay_date", "room_nights"],
+    ].dropna(subset=["room_nights"])
+    if len(hist) < min_obs_per_dow * 7:
+        return None
+    g = hist.groupby(hist["stay_date"].dt.dayofweek)["room_nights"]
+    counts = g.size()
+    # los 7 dias presentes y con suficientes obs: un dow ausente no
+    # aparece en counts y el map posterior daria NaN
+    if set(counts.index) != set(range(7)) or bool((counts < min_obs_per_dow).any()):
+        return None
+    profile = g.mean()
+    media = float(profile.mean())
+    if not np.isfinite(media) or media <= 0:
+        return None
+    return profile / media
 
 
 def _select_long_replacement(
@@ -686,11 +729,33 @@ def build_forecasts(
                         pred.loc[long_mask, "model_name"] = (
                             f"{model_name}+{replacement}(blend>{BLEND_LEAD_SPLIT})"
                         )
+                # patrón DOW para reemplazos planos: los modelos stats
+                # convergen a nivel medio a largo horizonte (la estacional
+                # AR decae); el nivel ganador × el ritmo semanal de la
+                # propiedad restaura los picos sin tocar la selección
+                long_pattern = "flat"
+                if (
+                    replacement is not None
+                    and getattr(fitted_alt, "kind", "") == "stats"
+                ):
+                    profile = _dow_profile(dem_p, cutoff)
+                    if profile is not None:
+                        long_idx = pred.index[pred["lead_days"] > BLEND_LEAD_SPLIT]
+                        dows = pd.Series(
+                            pd.DatetimeIndex(pred.loc[long_idx, "stay_date"]).dayofweek,
+                            index=long_idx,
+                        )
+                        pred.loc[long_idx, "raw_forecast_rn"] = (
+                            pred.loc[long_idx, "raw_forecast_rn"]
+                            * dows.map(profile)
+                        )
+                        long_pattern = f"dow_profile({DOW_PROFILE_DAYS}d)"
                 blend_by_property[prop] = {
                     "short_model": model_name,
                     "long_model": replacement if replacement is not None else model_name,
                     "blend_split": BLEND_LEAD_SPLIT,
                     "applied": replacement is not None,
+                    "long_pattern": long_pattern,
                     "trigger": (
                         f"rollout_collapse(q25_long={long_q25:.0f} < "
                         f"q25_short*{BLEND_COLLAPSE_RATIO}={short_q25 * BLEND_COLLAPSE_RATIO:.0f})"
