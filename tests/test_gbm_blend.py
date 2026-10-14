@@ -1,9 +1,11 @@
-"""Tests del cambio gbm-blend-long-leads (auto-diagnóstico de rollout).
+"""Tests del blend por lead (accuracy-aware, cambio accuracy-aware-blend).
 
 Cuando el campeón es un GBM y su rollout recursivo colapsa a largo lead
-(media larga < 0.80 x media corta), el forecast hace blend: GBM en leads
-1-30, curva de pickup en leads 31+. La decisión es por propiedad, en vivo,
-sin configuración — el auto-diagnóstico detecta la cascada.
+(q25 largo < 0.85 × q25 corto), el forecast puede empalmar otro modelo en
+leads > 30 — pero el reemplazo se elige por EVIDENCIA: el candidato con
+mejor ``wmape_long`` en los folds de la propiedad, solo si supera
+materialmente al propio campeón (margen ``BLEND_ACCURACY_MARGIN``).
+Sin evidencia no hay cirugía: el campeón conserva su rollout completo.
 """
 
 import numpy as np
@@ -11,8 +13,10 @@ import pandas as pd
 import pytest
 
 from src.forecasting.core import (
+    BLEND_ACCURACY_MARGIN,
     BLEND_COLLAPSE_RATIO,
     BLEND_LEAD_SPLIT,
+    _select_long_replacement,
     build_forecasts,
 )
 
@@ -83,6 +87,146 @@ def test_constantes_del_blend_declaradas():
     """Las constantes del blend están exportadas y son las esperadas."""
     assert BLEND_LEAD_SPLIT == 30
     assert BLEND_COLLAPSE_RATIO == 0.85
+    assert BLEND_ACCURACY_MARGIN == 0.95
+
+
+# --------------------------------------------------------------------------
+# _select_long_replacement — selección del reemplazo largo por evidencia
+# --------------------------------------------------------------------------
+
+
+def _folds(prop="corin", champ_long=0.20, alts=None, n_folds=4):
+    """fold_metrics con wmape_long por (modelo, propiedad, fold)."""
+    alts = alts if alts is not None else {"sarimax": 0.10, "pickup_curve": 0.30}
+    rows = []
+    for fold in range(n_folds):
+        rows.append({
+            "model": "lightgbm", "fold": fold, "property": prop,
+            "mape": 10.0, "wmape": 0.10, "mae": 8.0, "bias": 0.01,
+            "wmape_short": 0.08, "wmape_long": champ_long,
+        })
+        for model, wl in alts.items():
+            rows.append({
+                "model": model, "fold": fold, "property": prop,
+                "mape": 12.0, "wmape": 0.12, "mae": 9.0, "bias": 0.02,
+                "wmape_short": 0.09, "wmape_long": wl,
+            })
+    return pd.DataFrame(rows)
+
+
+def test_seleccion_elige_mejor_wmape_long():
+    model, reason = _select_long_replacement("corin", "lightgbm", _folds())
+    assert model == "sarimax"
+    assert "sarimax=0.100" in reason
+    assert "lightgbm=0.200" in reason
+
+
+def test_seleccion_rechaza_mejora_no_material():
+    """0.192 contra umbral 0.20×0.95=0.19: no justifica el empalme."""
+    folds = _folds(champ_long=0.20, alts={"sarimax": 0.192})
+    model, reason = _select_long_replacement("corin", "lightgbm", folds)
+    assert model is None
+    assert "ningún candidato supera el margen" in reason
+
+
+def test_seleccion_sin_folds_no_hay_reemplazo():
+    model, reason = _select_long_replacement("corin", "lightgbm", None)
+    assert model is None
+    assert "sin fold_metrics" in reason
+
+
+def test_seleccion_sin_columna_wmape_long():
+    folds = _folds().drop(columns=["wmape_long"])
+    model, reason = _select_long_replacement("corin", "lightgbm", folds)
+    assert model is None
+    assert "sin wmape_long" in reason
+
+
+def test_seleccion_sin_alternativas():
+    folds = _folds(alts={})
+    model, reason = _select_long_replacement("corin", "lightgbm", folds)
+    assert model is None
+    assert "sin candidatos" in reason
+
+
+def test_seleccion_campeon_sin_wmape_long():
+    folds = _folds()
+    folds.loc[folds["model"] == "lightgbm", "wmape_long"] = np.nan
+    model, reason = _select_long_replacement("corin", "lightgbm", folds)
+    assert model is None
+    assert "sin wmape_long" in reason
+
+
+def test_seleccion_excluye_otras_propiedades():
+    """Un wmape_long brillante de OTRA propiedad no cuenta para corin."""
+    folds = _folds(alts={"sarimax": 0.30})  # sarimax malo para corin
+    otra = pd.DataFrame([{
+        "model": "sarimax", "fold": 0, "property": "otra",
+        "mape": 1.0, "wmape": 0.01, "mae": 1.0, "bias": 0.0,
+        "wmape_short": 0.01, "wmape_long": 0.001,
+    }])
+    model, reason = _select_long_replacement("corin", "lightgbm", pd.concat([folds, otra]))
+    assert model is None, "la evidencia de otra propiedad no debe elegirse"
+
+
+# --------------------------------------------------------------------------
+# build_forecasts — empalme y retención con colapso forzado
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def collapse_forzado(monkeypatch):
+    """Fuerza el trigger de colapso: ratio < 99 es siempre cierto."""
+    monkeypatch.setattr("src.forecasting.core.BLEND_COLLAPSE_RATIO", 99.0)
+
+
+def test_blend_empalma_el_mejor_candidato(collapse_forzado):
+    dem = _demand()
+    pick = _panel()
+    cutoff = pd.Timestamp("2026-06-20")
+    grid, fitted, blend = build_forecasts(
+        {"corin": "lightgbm"}, dem, pick, cutoff, 90, fold_metrics=_folds(),
+    )
+    entry = blend["corin"]
+    assert entry["applied"] is True
+    assert entry["short_model"] == "lightgbm"
+    assert entry["long_model"] == "sarimax"
+    assert "sarimax=0.100" in entry["long_selection"]
+    largo = grid.loc[grid["lead_days"] > BLEND_LEAD_SPLIT]
+    esperado = f"lightgbm+sarimax(blend>{BLEND_LEAD_SPLIT})"
+    assert (largo["model_name"] == esperado).all()
+    corto = grid.loc[grid["lead_days"] <= BLEND_LEAD_SPLIT]
+    assert (corto["model_name"] == "lightgbm").all()
+
+
+def test_blend_retiene_campeon_sin_folds(collapse_forzado):
+    """Colapso detectado pero sin evidencia: NO se reemplaza nada."""
+    dem = _demand()
+    pick = _panel()
+    cutoff = pd.Timestamp("2026-06-20")
+    grid, fitted, blend = build_forecasts(
+        {"corin": "lightgbm"}, dem, pick, cutoff, 90,
+    )
+    entry = blend["corin"]
+    assert entry["applied"] is False
+    assert entry["long_model"] == "lightgbm"
+    assert "sin fold_metrics" in entry["long_selection"]
+    assert (grid["model_name"] == "lightgbm").all()
+
+
+def test_blend_retiene_campeon_cuando_nada_califica(collapse_forzado):
+    folds = _folds(champ_long=0.20, alts={"sarimax": 0.192})
+    dem = _demand()
+    pick = _panel()
+    cutoff = pd.Timestamp("2026-06-20")
+    grid, fitted, blend = build_forecasts(
+        {"corin": "lightgbm"}, dem, pick, cutoff, 90, fold_metrics=folds,
+    )
+    entry = blend["corin"]
+    assert entry["applied"] is False
+    assert entry["long_model"] == "lightgbm"
+    assert "ningún candidato supera el margen" in entry["long_selection"]
+    assert (grid["model_name"] == "lightgbm").all()
 
 
 def test_blend_declara_trigger_en_manifiesto():

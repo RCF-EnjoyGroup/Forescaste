@@ -684,6 +684,7 @@ def run_end_to_end(
     raw, fitted_models, blend_by_property = build_forecasts(
         model_by_property, history, pick, cutoff, horizon_days,
         curve_params, holiday_cal,
+        fold_metrics=fold_metrics,  # evidencia para el blend accuracy-aware
     )
 
     # ---------- 6. capacidad + ocupación (por fecha; fallback mediana → 100)

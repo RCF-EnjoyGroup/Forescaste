@@ -514,15 +514,73 @@ def predict_candidate(
     return out.reset_index()
 
 
-# blend de GBM con pickup_curve: el rollout recursivo del GBM degrada en
-# leads largos (predicciones se realimentan como lags); la curva calcula
-# cada fecha independientemente y no colapsa. Split en el mismo umbral
-# que el composite ponderado por lead.
+# blend del campeón ML a largo lead: el rollout recursivo degrada en
+# leads largos (predicciones se realimentan como lags). Split en el mismo
+# umbral que el composite ponderado por lead.
 BLEND_LEAD_SPLIT = 30
-# umbral de colapso del rollout: si la media de las predicciones a largo
-# lead cae por debajo de RATIO × la media de corto lead, la cascada de
-# realimentacion esta destruyendo el forecast y la curva toma el relevo
+# umbral de colapso del rollout: si el cuartil 25 de las predicciones a
+# largo lead cae por debajo de RATIO × el de corto lead, la cascada de
+# realimentación está destruyendo los valles de día-de-semana
 BLEND_COLLAPSE_RATIO = 0.85
+# margen de mejora material que exige el reemplazo largo: el candidato
+# alternativo debe superar al propio campeón por al menos 5% en el
+# wmape_long de los folds. Sin margen, un empalme marginal no justifica
+# la heterogeneidad de modelos dentro del horizonte (spec forecasting:
+# el reemplazo se elige por evidencia, no por defecto)
+BLEND_ACCURACY_MARGIN = 0.95
+
+
+def _select_long_replacement(
+    prop: str,
+    champion: str,
+    fold_metrics: pd.DataFrame | None,
+) -> tuple[str | None, str]:
+    """Elige el reemplazo largo por EVIDENCIA de folds, no por defecto.
+
+    El colapso del rollout es un problema de distribución de predicciones;
+    la calidad a largo lead de cada candidato ya está medida por
+    ``real_fold_metrics`` (mismo pipeline fit/predict, rollout incluido)
+    en ``wmape_long``. Gana el candidato con mejor ``wmape_long`` medio de
+    la propiedad — solo si supera materialmente al propio campeón
+    (``wmape_long_alt < wmape_long_campeón × BLEND_ACCURACY_MARGIN``).
+
+    Returns
+    -------
+    (modelo, razón) — modelo None cuando no hay evidencia o nada califica;
+    la razón siempre explica la decisión con los números.
+    """
+    if fold_metrics is None or len(fold_metrics) == 0:
+        return None, "sin fold_metrics (sin evidencia no hay reemplazo)"
+    needed = {"property", "model", "wmape_long"}
+    if not needed <= set(fold_metrics.columns):
+        return None, "fold_metrics sin wmape_long (sin evidencia no hay reemplazo)"
+
+    prop_rows = fold_metrics.loc[fold_metrics["property"] == prop]
+    champ_rows = prop_rows.loc[
+        (prop_rows["model"] == champion) & prop_rows["wmape_long"].notna()
+    ]
+    alt_rows = prop_rows.loc[
+        (prop_rows["model"] != champion) & prop_rows["wmape_long"].notna()
+    ]
+    if champ_rows.empty:
+        return None, f"campeón '{champion}' sin wmape_long en los folds"
+    if alt_rows.empty:
+        return None, "sin candidatos alternativos con wmape_long"
+
+    champ_long = float(champ_rows["wmape_long"].mean())
+    ranking = alt_rows.groupby("model")["wmape_long"].mean().sort_values()
+    best_model = str(ranking.index[0])
+    best_long = float(ranking.iloc[0])
+    threshold = champ_long * BLEND_ACCURACY_MARGIN
+    if best_long < threshold:
+        return best_model, (
+            f"mejor wmape_long: {best_model}={best_long:.3f} < "
+            f"{champion}={champ_long:.3f}×{BLEND_ACCURACY_MARGIN}={threshold:.3f}"
+        )
+    return None, (
+        f"ningún candidato supera el margen: mejor {best_model}={best_long:.3f} "
+        f">= {champion}={champ_long:.3f}×{BLEND_ACCURACY_MARGIN}={threshold:.3f}"
+    )
 
 
 def build_forecasts(
@@ -533,21 +591,32 @@ def build_forecasts(
     horizon_days: int,
     curve_params: dict | None = None,
     holiday_calendar: Any = None,
+    fold_metrics: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, dict[str, FittedCandidate], dict]:
     """Despacha el forecast del horizonte con el modelo ganador por propiedad.
 
     Auto-diagnóstico del rollout: cuando el campeón es un GBM y su
-    predicción a largo lead colapsa (media larga < 0.80 × media corta),
-    el rollout recursivo se está realimentando y destruyendo el forecast.
-    En ese caso, las fechas con lead > ``BLEND_LEAD_SPLIT`` usan la curva
-    de pickup (inmune a la cascada por calcular cada fecha independientemente).
-    La decisión es por propiedad, en vivo, sin configuración del usuario.
+    predicción a largo lead colapsa (q25 largo < ``BLEND_COLLAPSE_RATIO`` ×
+    q25 corto), el rollout recursivo se está realimentando. El reemplazo de
+    los leads > ``BLEND_LEAD_SPLIT`` se elige por evidencia: el candidato
+    con mejor ``wmape_long`` en los folds de la propiedad, solo si es
+    materialmente mejor que el propio campeón (spec forecasting). Sin
+    evidencia de folds, el colapso se registra pero no se reemplaza.
+
+    Parameters
+    ----------
+    fold_metrics:
+        Tabla (model, fold, property, ..., wmape_long) del benchmark real;
+        ``None`` en corridas de muestra → sin reemplazo (sin cirugía a
+        ciegas).
 
     Returns
     -------
     (grid_frame, fitted_by_property, blend_by_property):
-        ``blend_by_property``: {prop: {..., "trigger": ...}} para
-        propiedades con blend activado por colapso del rollout.
+        ``blend_by_property``: {prop: {trigger, short_model, long_model,
+        blend_split, applied, long_selection}} para propiedades con
+        colapso detectado — ``applied`` distingue empalme real de campeón
+        retenido.
     """
     cutoff = pd.Timestamp(cutoff)
     horizon_dates = pd.date_range(
@@ -573,10 +642,14 @@ def build_forecasts(
         # blend auto-diagnóstico: si el rollout del GBM colapsa a largo
         # lead (cuartil inferior de las predicciones largas << el de las
         # cortas), la cascada de predicciones realimentadas está destruyendo
-        # los valles de dia-de-semana — la curva lo rescata. Se usa el
-        # percentil 25 (no la media) porque el colapso se concentra en los
-        # valles (mar-jue) mientras los picos (vie-dom) quedan estables y
-        # diluirian la media.
+        # los valles de dia-de-semana. Se usa el percentil 25 (no la media)
+        # porque el colapso se concentra en los valles (mar-jue) mientras
+        # que los picos (vie-dom) quedan estables y diluirian la media.
+        # El reemplazo largo se elige por EVIDENCIA (mejor wmape_long de
+        # los folds), no por defecto — pickup_curve a ciegas resultó ser el
+        # PEOR modelo largo de FIESTA (26.3% vs 11.3% del campeón que
+        # "rescataba"): sobre-pronóstico de findes recortado al techo y
+        # desplome de lunes-jueves.
         if model_name in ML_FACTORIES and not fitted.cold_start():
             short_vals = pred.loc[
                 pred["lead_days"] <= BLEND_LEAD_SPLIT, "raw_forecast_rn"
@@ -590,29 +663,40 @@ def build_forecasts(
                 long_q25 = float(long_vals.quantile(0.25))
                 rollout_collapsed = long_q25 < short_q25 * BLEND_COLLAPSE_RATIO
             if rollout_collapsed:
-                fitted_curve = fit_candidate(
-                    "pickup_curve", dem_p, pick_p, cutoff, horizon_days,
-                    curve_params, holiday_calendar,
+                replacement, sel_reason = _select_long_replacement(
+                    prop, model_name, fold_metrics
                 )
-                if not fitted_curve.cold_start():
-                    pred_curve = predict_candidate(fitted_curve, pick_p, horizon_dates)
+                if replacement is not None:
+                    fitted_alt = fit_candidate(
+                        replacement, dem_p, pick_p, cutoff, horizon_days,
+                        curve_params, holiday_calendar,
+                    )
+                    if fitted_alt.cold_start():
+                        replacement = None
+                        sel_reason = (
+                            f"candidato con cold-start ({sel_reason}); campeón retenido"
+                        )
+                if replacement is not None:
+                    pred_alt = predict_candidate(fitted_alt, pick_p, horizon_dates)
                     long_mask = pred["lead_days"] > BLEND_LEAD_SPLIT
                     if long_mask.any():
                         pred.loc[long_mask, "raw_forecast_rn"] = (
-                            pred_curve.loc[long_mask, "raw_forecast_rn"].to_numpy()
+                            pred_alt.loc[long_mask, "raw_forecast_rn"].to_numpy()
                         )
                         pred.loc[long_mask, "model_name"] = (
-                            f"{model_name}+pickup_curve(blend>{BLEND_LEAD_SPLIT})"
+                            f"{model_name}+{replacement}(blend>{BLEND_LEAD_SPLIT})"
                         )
-                    blend_by_property[prop] = {
-                        "short_model": model_name,
-                        "long_model": "pickup_curve",
-                        "blend_split": BLEND_LEAD_SPLIT,
-                        "trigger": (
-                            f"rollout_collapse(q25_long={long_q25:.0f} < "
-                            f"q25_short*{BLEND_COLLAPSE_RATIO}={short_q25 * BLEND_COLLAPSE_RATIO:.0f})"
-                        ),
-                    }
+                blend_by_property[prop] = {
+                    "short_model": model_name,
+                    "long_model": replacement if replacement is not None else model_name,
+                    "blend_split": BLEND_LEAD_SPLIT,
+                    "applied": replacement is not None,
+                    "trigger": (
+                        f"rollout_collapse(q25_long={long_q25:.0f} < "
+                        f"q25_short*{BLEND_COLLAPSE_RATIO}={short_q25 * BLEND_COLLAPSE_RATIO:.0f})"
+                    ),
+                    "long_selection": sel_reason,
+                }
 
         frames.append(pred)
 
