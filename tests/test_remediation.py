@@ -197,7 +197,7 @@ def test_folds_no_solapan_ventana_de_reporte():
     dem = _normalize_demand(dem_raw, detect_schema(dem_raw, SourceKind.DEMAND, cfg.column_hints))
     pick = _normalize_pickup(pick_raw, detect_schema(pick_raw, SourceKind.PICKUP, cfg.column_hints))
     cutoff = pd.Timestamp("2025-06-30")
-    folds, errors = real_fold_metrics(dem, pick, cutoff)
+    folds, errors, _ = real_fold_metrics(dem, pick, cutoff)
 
     assert "property" in folds.columns
     assert (folds["property"] == "PORTFOLIO").any()

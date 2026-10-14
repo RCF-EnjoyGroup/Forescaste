@@ -79,7 +79,7 @@ def test_real_fold_metrics_90_fechas_por_fold_en_el_panel():
     dem = _normalize_demand(dem_raw, detect_schema(dem_raw, SourceKind.DEMAND, cfg.column_hints))
     pick = _normalize_pickup(pick_raw, detect_schema(pick_raw, SourceKind.PICKUP, cfg.column_hints))
 
-    folds, panel = real_fold_metrics(dem, pick, pd.Timestamp("2025-06-30"))
+    folds, panel, _ = real_fold_metrics(dem, pick, pd.Timestamp("2025-06-30"))
     per_fold = panel.groupby("fold")["stay_date"].nunique()
     assert not per_fold.empty
     # cada fold evaluado cubre el horizonte operativo completo

@@ -263,6 +263,7 @@ def build_intervals(
     lead_col: str = "lead_days",
     capacity_col: str = "capacity",
     min_residuals: int = 20,
+    property_col: str | None = None,
 ) -> IntervalResult:
     """5.8 — Construye p10/p50/p90 anclados al forecast publicado.
 
@@ -278,6 +279,12 @@ def build_intervals(
     - Con ``residual_bands`` (residuos por banda de lead) la amplitud se
       calibra por banda; una banda con menos de ``min_residuals``
       observaciones hereda el pool global (documentado en ``note``).
+    - Con ``residual_bands`` con claves ``(propiedad, banda)`` y
+      ``property_col`` (residuos del forecast operativo), la amplitud se
+      calibra por (propiedad, banda): una propiedad pequeña no hereda la
+      escala de error del portafolio ni viceversa. Escalera de fallback:
+      (propiedad, banda) ≥ ``min_residuals`` → pool de la propiedad →
+      pool de la banda → global.
     - Si no hay residuos, marca el modelo como sin intervalo (spec:
       indicarlo explícito).
     """
@@ -324,33 +331,91 @@ def build_intervals(
     if residual_bands:
         from src.evaluation.breakdowns import lead_band
 
-        bands = (
-            out[lead_col].map(lead_band).to_numpy()
-            if lead_col in out.columns
-            else np.full(len(out), "__global__")
+        prop_aware = (
+            property_col is not None
+            and property_col in out.columns
+            and all(isinstance(k, tuple) for k in residual_bands)
         )
-        band_shifts: dict[str, tuple[float, float]] = {}
-        fallback_bands: list[str] = []
-        for band, res in residual_bands.items():
-            res = pd.Series(res).dropna()
-            if len(res) >= min_residuals:
-                band_shifts[band] = _shifts(res)
-            else:
-                fallback_bands.append(band)
-        if global_shift is None:
-            pool = pd.concat(
-                [pd.Series(r).dropna() for r in residual_bands.values()], ignore_index=True
+        if prop_aware:
+            # pools de la escalera: (prop, banda) -> prop -> banda -> global
+            prop_pool: dict[str, list[pd.Series]] = {}
+            band_pool: dict[str, list[pd.Series]] = {}
+            all_res: list[pd.Series] = []
+            for (p, b), res in residual_bands.items():
+                res = pd.Series(res).dropna()
+                if len(res) == 0:
+                    continue
+                prop_pool.setdefault(str(p), []).append(res)
+                band_pool.setdefault(str(b), []).append(res)
+                all_res.append(res)
+            prop_pool = {p: pd.concat(v, ignore_index=True) for p, v in prop_pool.items()}
+            band_pool = {b: pd.concat(v, ignore_index=True) for b, v in band_pool.items()}
+            global_series = pd.concat(all_res, ignore_index=True)
+
+            row_bands = (
+                out[lead_col].map(lead_band).to_numpy()
+                if lead_col in out.columns
+                else np.full(len(out), "__global__", dtype=object)
             )
-            global_shift = _shifts(pool)
-        if fallback_bands:
-            notes.append(
-                f"bandas con < {min_residuals} residuos heredan el pool global: "
-                f"{sorted(set(fallback_bands))}"
+            row_props = out[property_col].astype(str).to_numpy()
+
+            shift_cache: dict[tuple[str, str], tuple[float, float]] = {}
+            escalera: set[str] = set()
+            for i, (p, b) in enumerate(zip(row_props, row_bands)):
+                key = (str(p), str(b))
+                if key not in shift_cache:
+                    res = residual_bands.get((str(p), str(b)))
+                    res = pd.Series(res).dropna() if res is not None else None
+                    if res is not None and len(res) >= min_residuals:
+                        shift_cache[key] = _shifts(res)
+                    else:
+                        lvl_prop = prop_pool.get(str(p))
+                        lvl_band = band_pool.get(str(b))
+                        if lvl_prop is not None and len(lvl_prop) >= min_residuals:
+                            shift_cache[key] = _shifts(lvl_prop)
+                            escalera.add(f"pool_propiedad:{p}")
+                        elif lvl_band is not None and len(lvl_band) >= min_residuals:
+                            shift_cache[key] = _shifts(lvl_band)
+                            escalera.add(f"pool_banda:{b}")
+                        else:
+                            shift_cache[key] = _shifts(global_series)
+                            escalera.add("pool_global")
+                lo, hi = shift_cache[key]
+                p10[i] = p10[i] + lo
+                p90[i] = p90[i] + hi
+            if escalera:
+                notes.append(
+                    f"celdas (propiedad, banda) con < {min_residuals} residuos heredan "
+                    f"la escalera: {sorted(escalera)}"
+                )
+        else:
+            bands = (
+                out[lead_col].map(lead_band).to_numpy()
+                if lead_col in out.columns
+                else np.full(len(out), "__global__")
             )
-        for i, band in enumerate(bands):
-            lo, hi = band_shifts.get(band, global_shift)
-            p10[i] = p10[i] + lo
-            p90[i] = p90[i] + hi
+            band_shifts: dict[str, tuple[float, float]] = {}
+            fallback_bands: list[str] = []
+            for band, res in residual_bands.items():
+                res = pd.Series(res).dropna()
+                if len(res) >= min_residuals:
+                    band_shifts[band] = _shifts(res)
+                else:
+                    fallback_bands.append(band)
+            if global_shift is None:
+                pool = pd.concat(
+                    [pd.Series(r).dropna() for r in residual_bands.values()], ignore_index=True
+                )
+                global_shift = _shifts(pool)
+            if fallback_bands:
+                notes.append(
+                    f"bandas con < {min_residuals} residuos heredan el pool global: "
+                    f"{sorted(set(fallback_bands))}"
+                )
+            for i, band in enumerate(bands):
+                lo, hi = band_shifts.get(band, global_shift)
+                p10[i] = p10[i] + lo
+                p90[i] = p90[i] + hi
     elif global_shift is not None:
         lo, hi = global_shift
         p10 = p10 + lo

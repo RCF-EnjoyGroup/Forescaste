@@ -573,6 +573,81 @@ def _dow_profile(
     return profile / media
 
 
+def operative_residual_bands(
+    fold_predictions: pd.DataFrame | None,
+    model_by_property: dict[str, str],
+    blend_by_property: dict[str, dict],
+    dem: pd.DataFrame,
+) -> dict[tuple[str, str], pd.Series]:
+    """Residuos del forecast OPERATIVO por (propiedad, banda de lead).
+
+    Ensambla por fold el forecast que opera en producción — campeón con
+    su blend (reemplazo largo) y su patrón DOW — a partir de las
+    predicciones que el benchmark ya computó (``real_fold_metrics`` las
+    retiene), sin re-entrenar nada, y emite sus residuos agrupados por
+    (propiedad, banda). Los intervalos describen el error de lo que se
+    publica, no el de los candidatos puros (spec forecasting).
+
+    La decisión del blend del corte T0 se aplica uniforme a los folds:
+    los intervalos calibran la configuración que opera. El perfil DOW se
+    calcula as-of del corte de CADA fold (el fold cutoff se recupera
+    como ``stay_date - lead_days``).
+    """
+    empty: dict[tuple[str, str], pd.Series] = {}
+    if fold_predictions is None or len(fold_predictions) == 0:
+        return empty
+    needed = {"property", "fold", "model", "stay_date", "lead_days", "forecast", "actual"}
+    if not needed <= set(fold_predictions.columns):
+        return empty
+    from src.evaluation.breakdowns import lead_band
+
+    work = fold_predictions.copy()
+    work["stay_date"] = pd.to_datetime(work["stay_date"])
+    out: dict[tuple[str, str], pd.Series] = {}
+    for prop, prop_rows in work.groupby("property"):
+        champion = model_by_property.get(str(prop))
+        if champion is None or champion not in set(prop_rows["model"]):
+            continue
+        base = prop_rows.loc[prop_rows["model"] == champion].set_index("stay_date")
+        entry = blend_by_property.get(str(prop)) or {}
+        long_model = entry.get("long_model") if entry.get("applied") else None
+        split = int(entry.get("blend_split", BLEND_LEAD_SPLIT))
+        use_profile = str(entry.get("long_pattern", "")).startswith("dow_profile")
+        operative = base[["lead_days", "actual", "forecast"]].copy()
+        if long_model and long_model in set(prop_rows["model"]):
+            alt = prop_rows.loc[prop_rows["model"] == long_model].set_index("stay_date")
+            long_dates = operative.index[operative["lead_days"] > split]
+            operative.loc[long_dates, "forecast"] = (
+                alt.loc[long_dates, "forecast"].to_numpy()
+            )
+            if use_profile:
+                dem_p = dem.loc[dem["property"] == prop]
+                # corte del fold de cada fecha: stay - lead
+                fold_cutoffs = (
+                    pd.Series(long_dates, index=long_dates)
+                    - pd.to_timedelta(operative.loc[long_dates, "lead_days"], unit="D")
+                )
+                for fc in fold_cutoffs.dt.normalize().unique():
+                    dates_fc = fold_cutoffs.index[fold_cutoffs == fc]
+                    profile = _dow_profile(dem_p, pd.Timestamp(fc))
+                    if profile is None:
+                        continue
+                    dows = pd.Series(
+                        pd.DatetimeIndex(dates_fc).dayofweek, index=dates_fc
+                    )
+                    operative.loc[dates_fc, "forecast"] = (
+                        operative.loc[dates_fc, "forecast"] * dows.map(profile)
+                    )
+        residuals = operative["forecast"] - operative["actual"]
+        residuals = residuals.dropna()
+        if residuals.empty:
+            continue
+        bands = operative.loc[residuals.index, "lead_days"].map(lead_band)
+        for band, res in residuals.groupby(bands):
+            out[(str(prop), str(band))] = res.reset_index(drop=True)
+    return out
+
+
 def _select_long_replacement(
     prop: str,
     champion: str,

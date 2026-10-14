@@ -75,6 +75,7 @@ from src.forecasting.core import (  # re-exportados para tests/CLI
     _remaining_pickup_curves,
     build_forecasts,
     fit_candidate,
+    operative_residual_bands,
     predict_candidate,
 )
 from src.monitoring.drift import (
@@ -482,6 +483,7 @@ def run_end_to_end(
     actual: pd.DataFrame | None = None,
     sample_data: bool = False,
     fold_metrics: pd.DataFrame | None = None,
+    fold_predictions: pd.DataFrame | None = None,
     error_panel: pd.DataFrame | None = None,
     eval_frame: pd.DataFrame | None = None,
     backtest_cfg: dict | None = None,
@@ -494,6 +496,12 @@ def run_end_to_end(
     omiten, el benchmark usa placeholders sintéticos (etiquetados), el
     modelo operativo es ``pickup_curve`` (default documentado) y el
     manifiesto lo marca ``benchmark_source: synthetic_placeholder``.
+
+    ``fold_predictions`` (retención de ``real_fold_metrics``) alimenta los
+    residuos del forecast OPERATIVO por (propiedad, banda) para los
+    intervalos — la banda refleja la escala de error de cada propiedad
+    (spec forecasting). Sin ellas, los intervalos usan el pool del
+    portafolio desde el backtest T-90..T-1 (comportamiento previo).
 
     ``eval_frame`` inyecta la evaluación de métricas y desgloses (columnas
     ``property/stay_date/lead_days/actual/forecast``) cuando la ventana de
@@ -710,20 +718,39 @@ def run_end_to_end(
     )
 
     # ---------- 8. intervalos P10/P50/P90 anclados al punto publicado
-    residuals_provided = bool(residual_bands) and len(residuals_flat) > 0
-    if not residuals_provided:
-        # default sintético (etiquetado): corridas sin reales evaluables
-        residuals_flat = pd.Series(
-            np.random.default_rng(config.random_seed).normal(0, 4, 60)
-        )
-    interval = build_intervals(
-        with_occ,
-        model_name=champion,
-        point_col="final_forecast_rn",
-        residuals=residuals_flat,
-        residual_bands=residual_bands if residuals_provided else None,
+    # residuos del forecast OPERATIVO por (propiedad, banda): la banda
+    # refleja la escala de error de CADA propiedad (spec forecasting) —
+    # el pool del portafolio daba bandas identicas para hoteles de 54 y
+    # 408 habitaciones (CORIN sobre-cubria 97-100%, FIESTA sub-cobria
+    # 25-37%). Ensamblados de las predicciones que los folds ya
+    # computaron, sin re-entrenar nada.
+    operative_bands = operative_residual_bands(
+        fold_predictions, model_by_property, blend_by_property, history,
     )
-    interval_source = "real_backtest" if residuals_provided else "synthetic_placeholder"
+    residuals_provided = bool(residual_bands) and len(residuals_flat) > 0
+    if operative_bands:
+        interval = build_intervals(
+            with_occ,
+            model_name=champion,
+            point_col="final_forecast_rn",
+            residual_bands=operative_bands,
+            property_col="property",
+        )
+        interval_source = "operative_fold_residuals"
+    else:
+        if not residuals_provided:
+            # default sintético (etiquetado): corridas sin reales evaluables
+            residuals_flat = pd.Series(
+                np.random.default_rng(config.random_seed).normal(0, 4, 60)
+            )
+        interval = build_intervals(
+            with_occ,
+            model_name=champion,
+            point_col="final_forecast_rn",
+            residuals=residuals_flat,
+            residual_bands=residual_bands if residuals_provided else None,
+        )
+        interval_source = "real_backtest" if residuals_provided else "synthetic_placeholder"
     fc_table = interval.frame
     run_ts = pd.Timestamp.now(tz="UTC").isoformat(timespec="seconds")
     fc_table["forecast_date"] = cutoff

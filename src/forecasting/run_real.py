@@ -142,7 +142,7 @@ def real_fold_metrics(
     horizon: int = FOLD_HORIZON, n_folds: int = 4,
     curve_params: dict | None = None,
     holiday_calendar=None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Métricas out-of-sample REALES de los 7 candidatos, por propiedad.
 
     Cada fold entrena con la historia ≤ corte del fold y evalúa los
@@ -154,18 +154,23 @@ def real_fold_metrics(
 
     Returns
     -------
-    (fold_metrics, error_panel):
+    (fold_metrics, error_panel, fold_predictions):
         ``fold_metrics``: model/fold/property/mape/wmape/mae/rmse/bias (una
         fila por candidato × propiedad × fold; ``PORTFOLIO`` = suma
         bottom-up de las propiedades evaluadas en el fold).
         ``error_panel``: errores por fecha al grano portafolio (base de la
         prueba Diebold-Mariano campeón vs subcampeón).
+        ``fold_predictions``: predicciones por (property, fold, model) con
+        su real y su lead — datos que el loop ya computa y que alimentan
+        los residuos del forecast operativo para los intervalos (spec
+        forecasting: banda por propiedad con residuos de lo que opera).
     """
     props = sorted(dem["property"].dropna().unique())
     fold_cutoffs = fold_cutoffs_for(cutoff, n_folds)
 
     rows: list[dict] = []
     errors: list[dict] = []
+    pred_rows: list[dict] = []
     for fi, c in enumerate(fold_cutoffs):
         dates = pd.date_range(c + pd.Timedelta(days=1), periods=horizon, freq="D")
         per_prop: dict[str, dict[str, pd.Series]] = {}
@@ -194,6 +199,15 @@ def real_fold_metrics(
                 )
                 pred = predict_candidate(fitted, pick_p, dates)
                 preds[model] = pred.set_index("stay_date")["raw_forecast_rn"]
+                for d, v in preds[model].items():
+                    pred_rows.append(
+                        {
+                            "property": p, "fold": fi, "model": model,
+                            "stay_date": d, "lead_days": int((d - c).days),
+                            "forecast": float(v),
+                            "actual": float(actual_win.get(d, float("nan"))),
+                        }
+                    )
             per_prop[p] = preds
             actual_by_prop[p] = actual_win
 
@@ -239,7 +253,17 @@ def real_fold_metrics(
                     errors.append(
                         {"model": model, "fold": fi, "stay_date": d, "actual": a, "forecast": f}
                     )
-    return pd.DataFrame(rows), pd.DataFrame(errors)
+    fold_predictions = (
+        pd.DataFrame(
+            pred_rows,
+            columns=["property", "fold", "model", "stay_date", "lead_days", "forecast", "actual"],
+        )
+        if pred_rows
+        else pd.DataFrame(
+            columns=["property", "fold", "model", "stay_date", "lead_days", "forecast", "actual"]
+        )
+    )
+    return pd.DataFrame(rows), pd.DataFrame(errors), fold_predictions
 
 
 # --------------------------------------------------------------------------
@@ -378,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
               f"(ventana ±{holiday_cal.window_days}d)")
     if events_df is not None:
         print(f"      eventos privados: {len(events_df)} cargados de '{cfg.events_path}'")
-    folds, error_panel = real_fold_metrics(
+    folds, error_panel, fold_predictions = real_fold_metrics(
         dem, pick, cutoff, horizon=fold_horizon, n_folds=n_folds,
         curve_params=curve_params, holiday_calendar=holiday_cal,
     )
@@ -423,6 +447,7 @@ def main(argv: list[str] | None = None) -> int:
         actual=None if args.futuro else dem,
         sample_data=False,
         fold_metrics=folds,
+        fold_predictions=fold_predictions,
         error_panel=error_panel,
         eval_frame=eval_frame,
     )

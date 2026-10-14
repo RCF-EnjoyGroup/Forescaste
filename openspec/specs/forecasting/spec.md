@@ -128,7 +128,7 @@ El sistema SHALL soportar horizontes de 30, 60 y 90 días de forma inicial, conf
 
 
 ### Requirement: Intervalos de incertidumbre
-El sistema SHALL generar P10, P50 y P90 (o lower/forecast/upper) siempre que el modelo lo permita, siendo el P50 el forecast principal; la banda SHALL anclarse al forecast publicado, calibrarse por banda de lead y respetar el techo de capacidad.
+El sistema SHALL generar P10, P50 y P90 (o lower/forecast/upper) siempre que el modelo lo permita, siendo el P50 el forecast principal; la banda SHALL anclarse al forecast publicado, calibrarse por (propiedad, banda de lead) con los residuos del forecast operativo y respetar el techo de capacidad. La amplitud de la banda SHALL reflejar la escala de error de cada propiedad — no la del portafolio agregado.
 
 #### Scenario: Publicación de percentiles
 - **WHEN** el modelo soporta intervalos
@@ -146,8 +146,13 @@ El sistema SHALL generar P10, P50 y P90 (o lower/forecast/upper) siempre que el 
 
 #### Scenario: Calibración por lead
 - **WHEN** se publican bandas para un rango de anticipaciones
-- **THEN** la amplitud de la banda refleja el error empírico por banda de lead (la banda de un lead 60-89 no hereda la escala de error de leads 1-30)
-- **THEN** el origen de los residuos usados se reporta de forma veraz (backtest real o fuente sintética etiquetada como tal)
+- **THEN** la amplitud de la banda refleja el error empírico por (propiedad, banda de lead): una propiedad pequeña no hereda la escala de error del portafolio ni viceversa (la banda de un lead 60-89 tampoco hereda la escala de leads 1-30)
+- **THEN** los residuos usados son los del forecast operativo (campeón con su blend y su patrón), no los de los candidatos puros
+- **THEN** una celda (propiedad, banda) con menos residuos que el mínimo cae a la escalera documentada: pool de la propiedad, luego pool de la banda, luego global
+
+#### Scenario: Origen de los residuos declarado
+- **WHEN** se publican bandas
+- **THEN** el origen de los residuos usados se reporta de forma veraz (residuos del forecast operativo en folds, revisiones del backtest o fuente sintética etiquetada como tal)
 
 #### Scenario: Modelo sin intervalos nativos
 - **WHEN** un candidato no puede producir percentiles

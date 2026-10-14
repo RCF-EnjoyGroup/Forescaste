@@ -127,7 +127,7 @@ def test_real_fold_metrics_emite_wmape_short_long():
     dem = _normalize_demand(dem_raw, detect_schema(dem_raw, SourceKind.DEMAND, cfg.column_hints))
     pick = _normalize_pickup(pick_raw, detect_schema(pick_raw, SourceKind.PICKUP, cfg.column_hints))
 
-    folds, _ = real_fold_metrics(dem, pick, pd.Timestamp("2025-06-30"), n_folds=2)
+    folds, _, _ = real_fold_metrics(dem, pick, pd.Timestamp("2025-06-30"), n_folds=2)
     assert {"wmape_short", "wmape_long"} <= set(folds.columns)
     assert folds["wmape_short"].notna().any()
     assert folds["wmape_long"].notna().any()
