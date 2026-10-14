@@ -42,10 +42,13 @@ env/
 Thumbs.db
 
 # Model checkpoints / artefactos de entrenamiento
+# OJO: /models/ ANCLADO a la raíz — el patrón sin ancla (models/) ignoraba
+# src/models/ (la capa de implementación de los candidatos) y jamás se
+# commiteó hasta 2026-10-14. Los checkpoints viven en la raíz, el código en src/.
 *.pt
 *.pth
 *.ckpt
-models/
+/models/
 catboost_info/
 lightgbm_model*/
 
