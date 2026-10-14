@@ -104,7 +104,7 @@ def test_e2e_cadena_completa(sources, tmp_path):
     # --- criterio 3: métricas y desgloses presentes
     assert result.checks.metrics_and_breakdowns
     assert {"mape", "wmape", "mae", "rmse", "bias"} <= set(result.metrics)
-    for name in ("lead_band", "property", "season", "month", "day_of_week", "weekend_weekday"):
+    for name in ("lead_band", "property", "property_weekly", "season", "month", "day_of_week", "weekend_weekday"):
         assert name in result.breakdowns, f"falta desglose {name}"
         assert not result.breakdowns[name].empty
 

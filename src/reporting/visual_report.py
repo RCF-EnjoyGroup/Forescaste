@@ -333,12 +333,29 @@ def _chart_accuracy_by_property(breakdown: pd.DataFrame | None) -> str | None:
 
 
 def _table_accuracy_by_property(
-    breakdown: pd.DataFrame | None, model_by_property: dict | None
+    breakdown: pd.DataFrame | None,
+    model_by_property: dict | None,
+    weekly_breakdown: pd.DataFrame | None = None,
 ) -> str:
-    """Tabla propiedad | modelo | WMAPE | MAPE | bias | n_obs."""
+    """Tabla propiedad | modelo | WMAPE | WMAPE sem | MAPE | bias | n_obs.
+
+    El MAPE diario lleva "†" cuando el decil inferior de los reales
+    evaluados cae por debajo de 10 RN: con reales de pocas noches, ±5 RN
+    de error ya son '+125%' — el MAPE diario es ruido de denominador,
+    no señal de precisión (la semana mide la operación real).
+    """
     if breakdown is None or breakdown.empty:
         return ""
     b = breakdown.copy().sort_values("wmape")
+    weekly: dict[str, float] = {}
+    weekly_note = False
+    if weekly_breakdown is not None and not weekly_breakdown.empty:
+        wb = weekly_breakdown
+        if "property" in wb.columns and "wmape" in wb.columns:
+            weekly = {
+                str(p): float(w) for p, w in zip(wb["property"], wb["wmape"])
+                if pd.notna(w)
+            }
     rows = []
     for _, r in b.iterrows():
         prop = str(r.get("property"))
@@ -348,15 +365,38 @@ def _table_accuracy_by_property(
                 return format(float(r[key]), fmt)
             except (KeyError, TypeError, ValueError):
                 return "—"
+        mape_cell = _f("mape", ".1f")
+        try:
+            p10 = float(r["p10_actual"])
+        except (KeyError, TypeError, ValueError):
+            p10 = float("nan")
+        small_denominator = bool(pd.notna(p10) and p10 < 10.0)
+        if small_denominator:
+            mape_cell += "†"
+            weekly_note = True
+        w_sem = weekly.get(prop)
+        w_sem_cell = format(w_sem, ".3f") if w_sem is not None else "—"
+        if w_sem is not None:
+            weekly_note = True
         rows.append(
             f"<tr><td>{prop}</td><td>{model}</td>"
-            f"<td>{_f('wmape', '.3f')}</td><td>{_f('mape', '.1f')}</td>"
+            f"<td>{_f('wmape', '.3f')}</td><td>{w_sem_cell}</td>"
+            f"<td>{mape_cell}</td>"
             f"<td>{_f('bias', '+.3f')}</td><td>{_f('n_obs', ',')}</td></tr>"
+        )
+    nota = ""
+    if weekly_note:
+        nota = (
+            '<p style="font-size:0.78em;color:#64748b;margin:4px 0 0 0">'
+            "WMAPE sem = precisión agregando forecast y reales por semana "
+            "(grano operativo). †MAPE diario con reales diminutos "
+            "(P10 < 10 RN): ler con el grano semanal.</p>"
         )
     return (
         '<table class="tbl"><thead><tr><th>Propiedad</th><th>Modelo</th>'
-        "<th>WMAPE</th><th>MAPE</th><th>Bias</th><th>n obs</th></tr></thead>"
-        "<tbody>" + "".join(rows) + "</tbody></table>"
+        "<th>WMAPE</th><th>WMAPE sem</th><th>MAPE</th><th>Bias</th>"
+        "<th>n obs</th></tr></thead>"
+        "<tbody>" + "".join(rows) + "</tbody></table>" + nota
     )
 
 
@@ -522,6 +562,7 @@ def generate_visual_report(
     kpis: dict | None = None,
     actual: pd.Series | None = None,
     property_breakdown: pd.DataFrame | None = None,
+    property_weekly_breakdown: pd.DataFrame | None = None,
     model_by_property: dict | None = None,
     backtest_report: dict | None = None,
     champion: str | None = None,
@@ -533,8 +574,9 @@ def generate_visual_report(
     omiten con un mensaje en lugar de fallar la corrida. El detalle por
     propiedad (forecast/bandas/modelo, accuracy y revisiones del backtest
     T-90..T-1) se activa con ``property_breakdown``/``model_by_property``/
-    ``backtest_report``/``champion``; sin ellos el reporte queda como la
-    vista de portafolio clásica.
+    ``backtest_report``/``champion``; ``property_weekly_breakdown`` agrega
+    la columna de WMAPE semanal a la tabla de accuracy; sin ellos el
+    reporte queda como la vista de portafolio clásica.
     """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -569,7 +611,9 @@ def generate_visual_report(
 
     # ---- accuracy por propiedad: barras + tabla exacta en la misma tarjeta
     acc_img = _chart_accuracy_by_property(property_breakdown)
-    acc_tbl = _table_accuracy_by_property(property_breakdown, model_by_property)
+    acc_tbl = _table_accuracy_by_property(
+        property_breakdown, model_by_property, property_weekly_breakdown
+    )
     if acc_img or acc_tbl:
         cards.append(
             '<section class="card"><h2>Accuracy por propiedad</h2>'

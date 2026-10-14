@@ -9,6 +9,7 @@ from src.evaluation.breakdowns import (
     lead_band,
     metrics_by_lead_band,
     metrics_by_property,
+    metrics_by_property_weekly,
     metrics_by_seasonality,
     property_ranking,
     systematic_pattern,
@@ -215,6 +216,84 @@ def test_metricas_por_propiedad_y_ranking():
     assert ranking["best"] == "corin"
     assert ranking["worst"] == "fiesta"
     assert ranking["error_volatility"] > 0
+
+
+def test_metricas_por_propiedad_con_contexto_de_reales():
+    """mean_actual y p10_actual acompañan al MAPE: el denominador chico
+    es criterio de lectura, no una lista fija de propiedades."""
+    df = pd.DataFrame(
+        {
+            "property": ["chica"] * 10 + ["grande"] * 10,
+            "stay_date": list(pd.date_range("2026-01-01", periods=10)) * 2,
+            "actual": [4, 6, 8, 5, 7, 4, 6, 9, 5, 6] + [90, 95, 100, 105, 110] * 2,
+            "forecast": [20.0] * 20,
+        }
+    )
+    table = metrics_by_property(df)
+    assert {"mean_actual", "p10_actual"} <= set(table.columns)
+    chica = table.loc[table["property"] == "chica"].iloc[0]
+    grande = table.loc[table["property"] == "grande"].iloc[0]
+    assert chica["mean_actual"] == pytest.approx(6.0)
+    assert chica["p10_actual"] < 10.0, "la propiedad chica debe quedar marcada"
+    assert grande["p10_actual"] >= 10.0, "la grande no debe marcarse"
+
+
+def test_metricas_semanales_cancelan_el_ruido_diario():
+    """El caso SJOSL: reales diminutos y volátiles con nivel perfecto.
+
+    Diaria: forecast 20 contra reales 10/30/20 — los días de 10 RN
+    aportan +100% de APE cada uno (ruido de denominador). Semanal: ambas
+    semanas suman 140 = forecast — WMAPE 0: el grano operativo mide la
+    señal de nivel que el diario esconde.
+    """
+    fechas = pd.date_range("2026-01-05", periods=14, freq="D")  # lunes, 2 semanas
+    semana = [10.0, 30.0, 10.0, 30.0, 10.0, 30.0, 20.0]  # suma 140
+    df = pd.DataFrame(
+        {
+            "property": ["chica"] * 14,
+            "stay_date": fechas,
+            "actual": semana * 2,
+            "forecast": [20.0] * 14,
+        }
+    )
+    table = metrics_by_property_weekly(df)
+    assert len(table) == 1
+    row = table.iloc[0]
+    assert row["property"] == "chica"
+    assert row["wmape"] == pytest.approx(0.0), "las semanas suman exacto"
+    assert int(row["n_obs"]) == 2, "n_obs cuenta semanas, no días"
+
+    # contra el grano diario para el mismo frame: el ruido es visible
+    diario = metrics_by_property(df).iloc[0]
+    assert diario["wmape"] > 0.15, "el ruido diario debe ser grande aquí"
+    assert diario["p10_actual"] == pytest.approx(10.0)
+
+
+def test_metricas_semanales_suma_correcta_por_semana():
+    """La agregación suma forecast y reales por (propiedad, semana)."""
+    df = pd.DataFrame(
+        {
+            "property": ["a", "a", "a", "b", "b"],
+            "stay_date": pd.to_datetime(
+                ["2026-01-05", "2026-01-06", "2026-01-12", "2026-01-05", "2026-01-20"]
+            ),
+            "actual": [10.0, 20.0, 30.0, 5.0, 6.0],
+            "forecast": [12.0, 18.0, 27.0, 5.0, 9.0],
+        }
+    )
+    table = metrics_by_property_weekly(df)
+    a = table.loc[table["property"] == "a"].iloc[0]
+    # semana 1: actual 30, forecast 30 (12+18); semana 2: 30 vs 27
+    assert a["wmape"] == pytest.approx(abs(27 - 30) / (30 + 30))
+    assert int(a["n_obs"]) == 2
+    b = table.loc[table["property"] == "b"].iloc[0]
+    assert int(b["n_obs"]) == 2, "semanas separadas cuentan como semanas distintas"
+
+
+def test_metricas_semanales_frame_vacio():
+    df = pd.DataFrame(columns=["property", "stay_date", "actual", "forecast"])
+    table = metrics_by_property_weekly(df)
+    assert table.empty
 
 
 def test_metricas_por_estacionalidad_y_patron_sistematico():

@@ -99,11 +99,55 @@ def metrics_by_property(
     actual_col: str = "actual",
     forecast_col: str = "forecast",
 ) -> pd.DataFrame:
-    """6.5 — Tabla por propiedad + ranking de precisión."""
+    """6.5 — Tabla por propiedad + ranking de precisión.
+
+    Incluye el contexto de escala de los reales (media y P10): el MAPE
+    diario con reales de pocas noches infla el error aparente de
+    propiedades chicas — un real de 4 RN convierte ±5 RN en '+125%'.
+    """
     out = _metrics_by(df, [property_col], actual_col, forecast_col)
+    ctx = (
+        df.groupby(property_col, dropna=False, observed=True)[actual_col]
+        .agg(mean_actual="mean", p10_actual=lambda s: s.quantile(0.10))
+        .reset_index()
+    )
+    out = out.merge(ctx, on=property_col, how="left")
     out = out.sort_values("wmape").reset_index(drop=True)
     out["rank"] = np.arange(1, len(out) + 1)
     return out
+
+
+def metrics_by_property_weekly(
+    df: pd.DataFrame,
+    property_col: str = "property",
+    date_col: str = "stay_date",
+    actual_col: str = "actual",
+    forecast_col: str = "forecast",
+) -> pd.DataFrame:
+    """Precisión por propiedad al grano SEMANAL (suma antes de medir).
+
+    Forecast y reales se suman por (propiedad, semana) y las métricas se
+    miden sobre las semanas — el grano operativo de staffing/compras y el
+    único honesto para propiedades chicas: el ruido diario de reales
+    diminutos (una noche de 4 RN) se cancela al agregar y queda la señal
+    de nivel. ``n_obs`` cuenta semanas, no días.
+    """
+    work = df.copy()
+    dates = pd.to_datetime(work[date_col], errors="coerce")
+    work["_week"] = dates.dt.to_period("W-SUN")
+    agg = (
+        work.dropna(subset=["_week"])
+        .groupby([property_col, "_week"], dropna=True, observed=True)
+        .agg(**{actual_col: (actual_col, "sum"), forecast_col: (forecast_col, "sum")})
+        .reset_index()
+    )
+    if agg.empty:
+        return pd.DataFrame(
+            columns=[property_col, "mape", "wmape", "mae", "rmse", "bias",
+                     "n_obs", "n_mape_excluded"]
+        )
+    out = _metrics_by(agg, [property_col], actual_col, forecast_col)
+    return out.sort_values("wmape").reset_index(drop=True)
 
 
 def property_ranking(table: pd.DataFrame) -> dict:

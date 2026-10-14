@@ -93,7 +93,7 @@ def test_modo_futuro_metricas_desde_backtest_inyectado(tmp_path):
     )
     # métricas y los 6 desgloses provienen del backtest inyectado
     assert {"mape", "wmape", "mae", "rmse", "bias"} <= set(result.metrics)
-    for name in ("lead_band", "property", "season", "month", "day_of_week", "weekend_weekday"):
+    for name in ("lead_band", "property", "property_weekly", "season", "month", "day_of_week", "weekend_weekday"):
         assert name in result.breakdowns and not result.breakdowns[name].empty
     # el pronóstico es futuro: después del corte
     ft = result.forecast_table

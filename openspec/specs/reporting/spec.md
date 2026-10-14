@@ -92,7 +92,7 @@ El sistema SHALL organizar el código de forma modular bajo `src/` (data, valida
 
 
 ### Requirement: Vista HTML por propiedad
-El sistema SHALL incluir en `report.html` el comportamiento por propiedad: forecast de cada propiedad con su banda de incertidumbre, techo de capacidad y reales cuando existan; accuracy por propiedad con su modelo operante; y las revisiones del backtest T-90..T-1 desglosadas por propiedad y por banda de lead. Las secciones SHALL ser defensivas ante datos ausentes y jamás romper la corrida.
+El sistema SHALL incluir en `report.html` el comportamiento por propiedad: forecast de cada propiedad con su banda de incertidumbre, techo de capacidad y reales cuando existan; accuracy por propiedad con su modelo operante — con el WMAPE diario Y el semanal lado a lado, marcando el MAPE diario con advertencia cuando el decil inferior de reales cae por debajo de 10 RN —; y las revisiones del backtest T-90..T-1 desglosadas por propiedad y por banda de lead. Las secciones SHALL ser defensivas ante datos ausentes y jamás romper la corrida.
 
 #### Scenario: Forecast por propiedad
 - **WHEN** la corrida produce forecast para varias propiedades
@@ -103,6 +103,8 @@ El sistema SHALL incluir en `report.html` el comportamiento por propiedad: forec
 #### Scenario: Accuracy por propiedad
 - **WHEN** la evaluación calcula el desglose por propiedad
 - **THEN** el reporte muestra el WMAPE por propiedad y una tabla con propiedad, modelo, WMAPE, MAPE, bias y n_obs
+- **THEN** la tabla incluye el WMAPE al grano semanal junto al diario cuando el desglose semanal está disponible
+- **THEN** el MAPE diario lleva la advertencia de denominador chico cuando corresponde, con la nota que lo explica
 
 #### Scenario: Revisiones del backtest por propiedad
 - **WHEN** el backtest T-90..T-1 produce revisiones

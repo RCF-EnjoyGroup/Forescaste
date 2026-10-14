@@ -542,6 +542,50 @@ def test_reporte_visual_por_propiedad_se_omita_sin_datos(tmp_path):
     assert "Campe" not in html  # sin champion no hay tarjeta
 
 
+def test_reporte_visual_accuracy_con_grano_semanal_y_advertencia(tmp_path):
+    """La tabla muestra WMAPE semanal y marca el MAPE con P10 < 10 RN."""
+    import pandas as pd
+
+    fc = _fc_multi_propiedad()
+    daily = pd.DataFrame(
+        {
+            "property": ["SJOSL", "FIESTA"],
+            "wmape": [0.34, 0.12], "mape": [51.0, 12.0],
+            "mae": [7.0, 40.0], "rmse": [9.0, 50.0], "bias": [0.0, -0.1],
+            "n_obs": [90, 90], "n_mape_excluded": [0, 0],
+            "mean_actual": [20.6, 362.0], "p10_actual": [7.0, 300.0],
+            "rank": [2, 1],
+        }
+    )
+    weekly = pd.DataFrame(
+        {
+            "property": ["SJOSL", "FIESTA"],
+            "wmape": [0.215, 0.06], "mape": [24.7, 6.0],
+            "mae": [30.0, 2500.0], "rmse": [35.0, 3000.0], "bias": [0.0, -0.05],
+            "n_obs": [13, 13], "n_mape_excluded": [0, 0],
+        }
+    )
+    out = generate_visual_report(
+        tmp_path, fc,
+        property_breakdown=daily,
+        property_weekly_breakdown=weekly,
+        model_by_property={"SJOSL": "pickup_curve", "FIESTA": "lightgbm"},
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "WMAPE sem" in html, "la columna semanal debe aparecer"
+    assert "0.215" in html, "el WMAPE semanal de SJOSL debe verse"
+    assert "51.0†" in html, "el MAPE de la propiedad con P10<10 lleva la marca"
+    assert "12.0†" not in html, "la propiedad grande no lleva marca"
+    assert "P10 < 10 RN" in html or "P10 < 10 RN" in html, "la nota explica la marca"
+    # sin weekly: la columna existe pero la celda queda con —; la marca de MAPE no depende del weekly
+    html_solo = generate_visual_report(
+        tmp_path, fc, property_breakdown=daily,
+        model_by_property={"SJOSL": "pickup_curve"},
+    ).read_text(encoding="utf-8")
+    assert "WMAPE sem" in html_solo, "la columna existe aunque falte el desglose"
+    assert "51.0†" in html_solo, "la advertencia de MAPE no depende del weekly"
+
+
 def test_sampled_backtest_emite_desglose_por_propiedad_y_banda():
     from src.forecasting.runner import _sampled_backtest
     from tests.test_remediation import _demand_2props, _pickup_2props

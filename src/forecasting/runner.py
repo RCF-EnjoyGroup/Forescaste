@@ -38,6 +38,7 @@ from src.evaluation.breakdowns import (
     lead_band,
     metrics_by_lead_band,
     metrics_by_property,
+    metrics_by_property_weekly,
     metrics_by_seasonality,
 )
 from src.evaluation.metrics import compute_metrics
@@ -764,6 +765,9 @@ def run_end_to_end(
         breakdowns = {
             "lead_band": metrics_by_lead_band(eval_src),
             "property": metrics_by_property(eval_src),
+            # grano semanal: lente operativo y honesto para propiedades
+            # chicas (el MAPE diario con reales de 4 RN es ruido, no senal)
+            "property_weekly": metrics_by_property_weekly(eval_src),
             **metrics_by_seasonality(eval_src),
         }
 
@@ -949,6 +953,9 @@ def run_end_to_end(
             "by_property": _jsonable(
                 breakdowns.get("property", pd.DataFrame()).to_dict("records")
             ),
+            "by_property_weekly": _jsonable(
+                breakdowns.get("property_weekly", pd.DataFrame()).to_dict("records")
+            ),
             "evaluation_coverage": _jsonable(evaluation_coverage),
         }
     else:
@@ -1047,6 +1054,7 @@ def run_end_to_end(
             kpis=kpis,
             actual=actual_series,
             property_breakdown=breakdowns.get("property"),
+            property_weekly_breakdown=breakdowns.get("property_weekly"),
             model_by_property=model_by_property,
             backtest_report=backtest_report,
             champion=champion,
