@@ -66,9 +66,14 @@ python -m src.forecasting.run_real --futuro --hasta 2027-03-31
 **Este es el modo que usa el negocio**: corte = **último real** y horizonte
 hasta `--hasta`. Entrena con todo el histórico disponible. La ventana futura
 todavía no tiene reales, así que métricas, desgloses y banda provienen de un
-**backtest real sobre la ventana anterior** al corte; el manifiesto lo
-etiqueta `metrics_source: injected_backtest` y la documentación técnica lo
-declara. Jamás se inventan reales futuros.
+**backtest real sobre la ventana anterior** al corte — y ese backtest es el
+pipeline completo corrido *as-of*: la selección del campeón se repite con
+corte al **inicio** de la ventana de backtest (sin ventaja retrospectiva) y
+el campeón resultante la opera con el mismo fit/predict/blend y las mismas
+restricciones de piso/techo del forecast publicado. Las métricas describen
+exactamente lo que operó (`eval_model_by_property` en el manifiesto) y el
+manifiesto lo etiqueta `metrics_source: injected_backtest`. Jamás se
+inventan reales futuros.
 
 ### Parámetros por entorno (sin tocar código)
 
@@ -149,7 +154,7 @@ src/
 ├── explainability/      # importancia de features + SHAP
 ├── monitoring/          # drift, outliers, decisión de re-entrenamiento, manifiesto
 └── reporting/           # benchmark, tabla de forecast, KPIs, dataset Power BI, entregables
-tests/                   # 197 tests
+tests/                   # 348 tests
 openspec/                # specs, propuestas y changelog del proyecto
 ```
 
@@ -163,7 +168,9 @@ openspec/                # specs, propuestas y changelog del proyecto
   propia fila en su ventana.
 - **El campeón opera**: el forecast lo genera el modelo ganador del bake-off
   (global y por propiedad); benchmark, manifiesto, tabla de salida y Power BI
-  declaran el mismo campeón.
+  declaran el mismo campeón. En modo `--futuro` también opera la **evaluación**:
+  las métricas inyectadas miden el campeón seleccionado as-of al inicio de la
+  ventana de backtest (`eval_model_by_property`), nunca un modelo sustituto.
 - **Gate de calidad con dientes**: un status `fail` del Data Quality Report
   detiene la corrida antes de entrenar y no publica forecast.
 - **Sin doble conteo**: la demanda pasa por filtros (`snap_flag`, ratecodes de
@@ -174,13 +181,18 @@ openspec/                # specs, propuestas y changelog del proyecto
 - **Curva de pickup estacional**: a leads ≥ `pickup_curve.season_min_lead`
   (30) la curva se condiciona por la temporada de la fecha de estancia — el
   forecast a largo plazo converge al nivel estacional del stay; a leads
-  cortos se preserva el pooling por propiedad. Defaults validados con A/B.
+  cortos se preserva el pooling por propiedad. Los bins de lead son
+  **bordes explícitos densos a leads cortos** (`pickup_curve.bin_edges`):
+  la curva de reservas es cóncava y con bins uniformes de ~9 días el lead 1
+  y el lead 9 compartían pickup esperado — sobre-pronóstico al cierre de la
+  reserva, exactamente donde el negocio decide.
 - **Feriados CR + US como señal de largo plazo**: calendario confiable
   (librería `holidays`: Semana Santa movible, Thanksgiving, Memorial, Día de
   la Madre…) con ventanas de viaje ±`window_days`; la curva de pickup gana un
   nivel de condicionamiento por ventana de feriado (con umbral propio y
-  fallback) y los candidatos ML reciben `days_to_nearest_holiday`.
-- **Eventos privados opcionales** (`data/events.csv`, contrato en
+  fallback) y los candidatos ML reciben `days_to_nearest_holiday` y
+  `lead_days` (anticipación de la estancia — exógena, sin fuga).
+- **Eventos privados opcionales** (`data.events.csv`, contrato en
   README_SISTEMAS.md): conciertos/congresos/torneos con scoping por propiedad;
   sin archivo el motor queda idéntico y el manifiesto declara la fuente
   ausente.
@@ -194,7 +206,17 @@ openspec/                # specs, propuestas y changelog del proyecto
   del campeón contra el subcampeón con corrección HAC al largo real de la
   ventana de fold (empate → parsimonia), cobertura de
   evaluación reportada (propiedades dentro/fuera de la ventana) y desglose
-  por propiedad persistido en el accuracy report y Power BI.
+  por propiedad persistido en el accuracy report y Power BI. El override
+  por propiedad exige un **margen de materialidad del 5%** sobre el campeón
+  global: con 4 folds las diferencias pequeñas son ruido y sin margen el
+  modelo por propiedad oscilaba entre corridas.
+- **Cobertura empírica de la banda**: el accuracy report publica la
+  cobertura de P10–P90 contra reales (global, por propiedad y por banda de
+  lead) cuando la ventana evaluada tiene reales — una banda honesta contiene
+  el 80% nominal; el desglose expone las celdas mal calibradas.
+- **Baseline exigente**: `seasonal_naive` usa la media de las últimas 4
+  ocurrencias del mismo día de semana (no una sola observación) — el
+  benchmark solo es creíble si ganarle al baseline cuesta algo.
 - **Reproducible**: misma seed → mismas predicciones, verificado por test.
 
 ---
@@ -202,7 +224,7 @@ openspec/                # specs, propuestas y changelog del proyecto
 ## Tests
 
 ```bash
-python -m pytest -q          # 223 tests
+python -m pytest -q          # 348 tests
 ```
 
 Cobren la cadena completa (e2e), esquema alternativo, as-of/leakage,
@@ -211,7 +233,11 @@ restricción de capacidad, calidad de datos, manifiesto reproducible y el modo
 hallazgos del diagnóstico: campeón operativo, coherencia entre entregables,
 gate de calidad con dientes, lags calendario, rollout ML sin off-by-one,
 significancia Diebold-Mariano, bandas ancladas/capadas y cobertura de
-evaluación.
+evaluación. La revisión externa de data science (2026-10-15) sumó blindajes:
+el backtest del modo futuro opera el campeón seleccionado as-of (no un modelo
+sustituto), el margen de materialidad del override por propiedad, los bordes
+de bins densos a leads cortos, la media de K ocurrencias en el baseline y la
+cobertura empírica de la banda.
 
 ---
 

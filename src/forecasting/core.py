@@ -44,6 +44,12 @@ ML_FEATURES = [
     "rolling_mean_7", "rolling_mean_14", "rolling_mean_28", "rolling_std_28",
     "day_of_week", "is_weekend", "month", "quarter",
     "current_booked_rn",
+    # lead de la estancia respecto al corte: exógeno, conocido a cualquier
+    # lead sin fuga (aritmética de calendario). Sin él el GBM solo distingue
+    # leads a través de current_booked_rn — una versión ruidosa de la misma
+    # información — y no puede aprender la forma de la curva de pickup
+    # (el pickup restante decae con el lead aunque el booked no cambie).
+    "lead_days",
     "days_to_nearest_holiday",
 ]
 STATS_TAIL_DAYS = 1095  # cola de entrenamiento ETS/SARIMAX (guard de costo)
@@ -214,13 +220,17 @@ def _ml_row(
     d: pd.Timestamp,
     booked: float,
     holiday_calendar: Any = None,
+    lead: float | None = None,
 ) -> dict[str, float]:
     """Features as-of del índice ``t`` del grid diario (ventana [t-w, t-1]).
 
     El target de la propia fila JAMÁS entra a sus features: los rollings
     excluyen ``vals[t]`` (equivalente a ``shift(1)`` antes de la ventana).
     ``days_to_nearest_holiday`` es exógena y conocida a cualquier lead
-    (feriados computados por calendario, no observados).
+    (feriados computados por calendario, no observados). ``lead`` es la
+    anticipación de la estancia respecto al corte de fit — también exógena:
+    en el panel de entrenamiento es el lead del snapshot y en el horizonte
+    es ``stay - cutoff``; sin fuga en ninguno de los dos casos.
     """
     def lag(k: int) -> float:
         return float(vals[t - k]) if t - k >= 0 else float("nan")
@@ -253,6 +263,7 @@ def _ml_row(
         "month": float(d.month),
         "quarter": float((d.month - 1) // 3 + 1),
         "current_booked_rn": float(booked),
+        "lead_days": float(lead) if lead is not None else float("nan"),
         "days_to_nearest_holiday": (
             holiday_calendar.days_to_nearest(d) if holiday_calendar is not None
             else float("nan")
@@ -379,7 +390,10 @@ def _fit_ml(
             t = pos.get(pd.Timestamp(stay))
             if t is None or np.isnan(vals[t]):
                 continue
-            row = _ml_row(vals, t, pd.Timestamp(stay), float(booked), holiday_calendar)
+            row = _ml_row(
+                vals, t, pd.Timestamp(stay), float(booked), holiday_calendar,
+                lead=float(lead),
+            )
             row["room_nights"] = float(vals[t])
             train_rows.append(row)
     if len(train_rows) < ML_MIN_TRAIN_OBS:
@@ -494,7 +508,13 @@ def predict_candidate(
         for j, d in enumerate(dates):
             t = base + j
             booked_j = float(booked.iloc[j]) if pd.notna(booked.iloc[j]) else float("nan")
-            row = _ml_row(ext_vals, t, d, booked_j, fitted.holiday_calendar)
+            # lead as-of: anticipación de la estancia respecto al corte de
+            # fit — la misma semántica del panel de entrenamiento (lead del
+            # snapshot), conocida sin fuga
+            lead_j = float((d - fitted.fit_cutoff).days)
+            row = _ml_row(
+                ext_vals, t, d, booked_j, fitted.holiday_calendar, lead=lead_j
+            )
             yhat = max(float(fitted.artifact.predict(pd.DataFrame([row]))[0]), 0.0)
             preds.append(yhat)
             ext_vals[t] = yhat

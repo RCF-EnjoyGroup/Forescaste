@@ -22,9 +22,13 @@ Qué hace, sin tocar código:
    las métricas).
 4. Modo ``--futuro``: corte = último real y horizonte hasta ``--hasta``.
    La ventana futura NO tiene reales, así que métricas y desgloses provienen
-   de un backtest real sobre la ventana ANTERIOR al corte
-   (``metrics_source: injected_backtest`` en el manifiesto); jamás se
-   inventan reales futuros.
+   de un backtest real sobre la ventana ANTERIOR al corte. Ese backtest
+   repite la selección del campeón **as-of** al inicio de la ventana y el
+   campeón resultante la opera con el pipeline de producción (fit/predict/
+   blend + piso de reservas + techo de capacidad): las métricas miden el
+   pipeline completo sin ventaja retrospectiva
+   (``metrics_source: injected_backtest`` + ``eval_model_by_property`` en
+   el manifiesto); jamás se inventan reales futuros.
 5. El CAMPEÓN del benchmark opera el forecast: el runner lo despacha por
    propiedad (selección por propiedad cuando hay evidencia suficiente) y
    ejecuta el backtest T-90..T-1 muestreado que alimenta los residuos por
@@ -48,26 +52,27 @@ import pandas as pd
 from src.config import load_config
 from src.data.schema import SourceKind, detect_schema
 from src.evaluation.metrics import compute_metrics
+from src.evaluation.selection import select_per_property
+from src.forecasting.constraints import apply_capacity_constraint
 from src.forecasting.core import (
     CANDIDATE_MODELS,
     PORTFOLIO,
     _apply_aliases,
-    _booked_requests,
     _normalize_capacity,
     _normalize_demand,
     _normalize_pickup,
-    _remaining_pickup_curves,
+    build_forecasts,
     fit_candidate,
     predict_candidate,
 )
-from src.forecasting.runner import run_end_to_end
+from src.forecasting.runner import _dm_horizon_from_panel, run_end_to_end
 from src.features.events import load_events
 from src.features.holidays import (
     HolidayCalendar,
     calendar_with_events,
     holiday_calendar_from_config,
 )
-from src.models.baselines import PickupCurveModel
+from src.reporting.benchmark import run_benchmark
 
 # Ventana de cada fold = horizonte OPERATIVO completo (config
 # ``benchmark.fold_horizon_days``). Con spacing trimestral y 4 folds, las 4
@@ -271,49 +276,74 @@ def real_fold_metrics(
 # --------------------------------------------------------------------------
 
 def per_property_backtest(
-    dem: pd.DataFrame, pick: pd.DataFrame, cutoff: pd.Timestamp, horizon: int = 30,
+    dem: pd.DataFrame,
+    pick: pd.DataFrame,
+    cutoff: pd.Timestamp,
+    horizon: int = 30,
     curve_params: dict | None = None,
+    holiday_calendar=None,
+    model_by_property: dict[str, str] | None = None,
+    fold_metrics: pd.DataFrame | None = None,
+    *,
+    cap: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Backtest por propiedad vía el MISMO pipeline del runner.
+    """Backtest por propiedad con el MISMO pipeline del runner (campeón opera).
 
-    Usa ``_remaining_pickup_curves`` + ``_booked_requests`` con corte
-    ``cutoff - horizon``, de modo que la ventana evaluada está completamente
-    cubierta por reales observados. Devuelve ``property, stay_date, lead_days,
-    forecast, actual``: en la corrida futura es la base de las métricas y
-    desgloses (no hay reales en el horizonte futuro; nunca se inventan).
+    Corresponde a ``build_forecasts`` (fit/predict/blend de producción) con
+    corte ``cutoff - horizon``, de modo que la ventana evaluada está
+    completamente cubierta por reales observados. ``model_by_property`` es la
+    selección AS-OF ese mismo corte — la evaluación mide el pipeline completo
+    (selección + forecast) sin ventaja retrospectiva; sin ella opera
+    ``pickup_curve`` (default legado documentado). Con ``cap`` se aplican
+    piso de reservas y techo de capacidad (``apply_capacity_constraint``):
+    la métrica mide el forecast PUBLICADO, no una versión intermedia.
+
+    Devuelve ``property, stay_date, lead_days, forecast, actual`` (+ el
+    ``model_name`` que operó cada fila): en la corrida futura es la base de
+    las métricas y desgloses (no hay reales en el horizonte futuro; nunca
+    se inventan).
     """
-    c = cutoff - pd.Timedelta(days=horizon)
-    hist = dem.loc[dem["stay_date"] <= c]
-    pkf = pick.loc[pick["snapshot_date"] <= c]
-    curves = _remaining_pickup_curves(pkf, hist, c)
-    curves = curves.loc[curves["lead_days"] <= horizon]
-    if curves.empty:
-        return pd.DataFrame(columns=["property", "stay_date", "lead_days", "forecast", "actual"])
-    model = PickupCurveModel(**(curve_params or {})).fit(curves)
-
-    dates = pd.date_range(c + pd.Timedelta(days=1), periods=horizon, freq="D")
+    c = pd.Timestamp(cutoff) - pd.Timedelta(days=int(horizon))
     props = sorted(dem["property"].dropna().unique())
-    requests = _booked_requests(pkf, props, dates, c)
-    no_booked = requests["current_booked_rn"].isna()
-    requests["current_booked_rn"] = requests["current_booked_rn"].fillna(0.0)
-    fc = model.predict(requests)
-    if no_booked.any():
-        level = hist.groupby("property")["room_nights"].mean()
-        fc.loc[no_booked, "forecast_rn"] = (
-            fc.loc[no_booked, "property"].map(level).fillna(fc.loc[no_booked, "forecast_rn"])
+    models = {p: "pickup_curve" for p in props}
+    models.update({str(p): str(m) for p, m in (model_by_property or {}).items()})
+
+    raw, _, _ = build_forecasts(
+        models, dem, pick, c, int(horizon), curve_params, holiday_calendar,
+        fold_metrics=fold_metrics,
+    )
+
+    if cap is not None and not cap.empty:
+        cap_daily = (
+            cap.dropna(subset=["capacity"])
+            .groupby(["property", "stay_date"], as_index=False)["capacity"]
+            .max()
         )
+        raw = raw.merge(cap_daily, on=["property", "stay_date"], how="left")
+        # mediana as-of del corte del backtest (nunca futuro)
+        prop_cap = cap.loc[cap["stay_date"] <= c].groupby("property")["capacity"].median()
+        raw["capacity"] = raw["capacity"].fillna(raw["property"].map(prop_cap)).fillna(100.0)
+        constrained, _ = apply_capacity_constraint(raw)
+        raw["forecast"] = constrained["final_forecast_rn"]
+    else:
+        raw["forecast"] = raw["raw_forecast_rn"]
 
     actual = dem[["property", "stay_date", "room_nights"]].rename(
         columns={"room_nights": "actual"}
     )
-    merged = fc.merge(actual, on=["property", "stay_date"], how="inner")
+    merged = raw.merge(actual, on=["property", "stay_date"], how="inner")
     if merged.empty:
-        return pd.DataFrame(columns=["property", "stay_date", "lead_days", "forecast", "actual"])
-    out = merged.rename(columns={"forecast_rn": "forecast"})
-    out["lead_days"] = pd.to_numeric(out["lead_days"], errors="coerce").fillna(horizon).astype(int)
-    return out[["property", "stay_date", "lead_days", "forecast", "actual"]].reset_index(
-        drop=True
+        return pd.DataFrame(
+            columns=["property", "stay_date", "lead_days", "forecast", "actual"]
+        )
+    out = merged
+    out["lead_days"] = (
+        pd.to_numeric(out["lead_days"], errors="coerce").fillna(horizon).astype(int)
     )
+    cols = ["property", "stay_date", "lead_days", "forecast", "actual"]
+    if "model_name" in out.columns:
+        cols.append("model_name")
+    return out[cols].reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------
@@ -417,9 +447,52 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     eval_frame: pd.DataFrame | None = None
+    eval_models: dict[str, str] | None = None
     if args.futuro:
-        print(f"[3/5] Backtest real T-{horizon}d (métricas y desgloses)...")
-        eval_bt = per_property_backtest(dem, pick, cutoff, horizon=horizon, curve_params=curve_params)
+        # La evaluación mide el PIPELINE completo (selección + forecast), no
+        # solo el forecast: el benchmark se repite con corte al INICIO de la
+        # ventana de backtest (as-of, sin ventaja retrospectiva) y el campeón
+        # resultante opera esa ventana — así `metrics_source: injected_backtest`
+        # es literalmente cierto: son las métricas que el motor publicaría si
+        # hubiera corrido hace `horizon` días.
+        cutoff_eval = cutoff - pd.Timedelta(days=horizon)
+        print(
+            f"[3/5] Backtest real T-{horizon}d — selección as-of {cutoff_eval.date()}, "
+            "el campeón opera la evaluación..."
+        )
+        folds_eval, error_panel_eval, _ = real_fold_metrics(
+            dem, pick, cutoff_eval, horizon=fold_horizon, n_folds=n_folds,
+            curve_params=curve_params, holiday_calendar=holiday_cal,
+        )
+        if folds_eval.empty:
+            print("ERROR: folds de evaluación sin datos (histórico insuficiente).", file=sys.stderr)
+            return 1
+        bench_eval = run_benchmark(
+            folds_eval, error_panel=error_panel_eval, source="real_backtest",
+            dm_horizon=_dm_horizon_from_panel(error_panel_eval),
+        )
+        sel_eval = (
+            select_per_property(folds_eval, global_champion=bench_eval.champion)
+            if "property" in folds_eval.columns
+            else None
+        )
+        props_eval = sorted(dem["property"].dropna().unique())
+        eval_models = {
+            p: (
+                sel_eval.by_property.get(p, bench_eval.champion)
+                if sel_eval else bench_eval.champion
+            )
+            for p in props_eval
+        }
+        print(
+            f"      campeón de la evaluación: {bench_eval.champion} | "
+            f"por propiedad: {eval_models}"
+        )
+        eval_bt = per_property_backtest(
+            dem, pick, cutoff, horizon=horizon, curve_params=curve_params,
+            holiday_calendar=holiday_cal, model_by_property=eval_models,
+            fold_metrics=folds_eval, cap=cap,
+        )
         if eval_bt.empty:
             print("ERROR: el backtest previo al corte no produjo observaciones reales.", file=sys.stderr)
             return 1
@@ -450,6 +523,7 @@ def main(argv: list[str] | None = None) -> int:
         fold_predictions=fold_predictions,
         error_panel=error_panel,
         eval_frame=eval_frame,
+        eval_models=eval_models,
     )
 
     checks = result.checks

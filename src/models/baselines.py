@@ -29,6 +29,11 @@ class SeasonalNaive:
     date_col: str = "stay_date"
     value_col: str = "room_nights"
     season_days: int = 7
+    # media de las últimas K ocurrencias del mismo día de semana: una sola
+    # observación es un contrincante débil (todo lo que "gana" contra él está
+    # menos probado de lo que parece); K=4 ≈ 4 semanas suaviza ruido sin
+    # aplanar la estacionalidad semanal
+    dow_window: int = 4
 
     def fit(self, history: pd.DataFrame) -> "SeasonalNaive":
         self._history = history.copy()
@@ -42,14 +47,15 @@ class SeasonalNaive:
         rows = []
         last = hist[self.value_col].iloc[-1]
         for d in dates:
-            # buscar la última ocurrencia del mismo día de la semana previa a d
+            # últimas K ocurrencias del mismo día de la semana previas a d
             same_dow = hist.loc[hist[self.date_col].dt.dayofweek == d.dayofweek]
             same_dow = same_dow.loc[same_dow[self.date_col] < d]
-            value = same_dow[self.value_col].iloc[-1] if len(same_dow) else last
+            window = same_dow[self.value_col].tail(max(int(self.dow_window), 1))
+            value = float(window.mean()) if len(window) else float(last)
             rows.append(
                 {
                     self.date_col: d,
-                    "forecast_rn": float(value),
+                    "forecast_rn": value,
                     "model_name": "seasonal_naive",
                 }
             )
@@ -81,6 +87,14 @@ class PickupCurveModel:
     """
 
     n_bins: int = 10
+    # Bordes de bins de lead EXPLÍCITOS (toman precedencia sobre ``n_bins``):
+    # la curva de reservas es cóncava — con bins uniformes de ~9 días el lead
+    # 1 y el lead 9 comparten pickup esperado, comprimiendo el gradiente
+    # exactamente donde el negocio decide (leads operativos). El último borde
+    # es catch-all: leads ≥ último borde usan la curva del bin final.
+    # ``None`` ⇒ ``n_bins`` uniformes en [min_lead, max_lead] (comportamiento
+    # previo).
+    bin_edges: list[int] | None = None
     min_lead: int = 1
     date_col: str = "stay_date"
     lead_col: str = "lead_days"
@@ -109,9 +123,22 @@ class PickupCurveModel:
         if self.max_history_days is not None and not df.empty:
             keep_from = df[self.date_col].max() - pd.Timedelta(days=int(self.max_history_days))
             df = df.loc[df[self.date_col] >= keep_from]
-        max_lead = int(df[self.lead_col].max()) if len(df) else 365
-        self.max_lead_ = max_lead
-        edges = np.linspace(self.min_lead, max(max_lead, self.min_lead) + 1, self.n_bins + 1)
+        if self.bin_edges is not None:
+            edges_arr = np.asarray(self.bin_edges, dtype=float)
+            if len(edges_arr) < 2 or np.any(np.diff(edges_arr) <= 0):
+                raise ValueError(
+                    f"bin_edges debe tener >= 2 bordes estrictamente crecientes: {self.bin_edges}"
+                )
+            if edges_arr[0] < self.min_lead:
+                raise ValueError(
+                    f"el primer borde ({edges_arr[0]}) no puede ser < min_lead ({self.min_lead})"
+                )
+            # catch-all: leads >= último borde caen en el bin final
+            edges = np.concatenate([edges_arr, [np.inf]])
+        else:
+            max_lead = int(df[self.lead_col].max()) if len(df) else 365
+            self.max_lead_ = max_lead
+            edges = np.linspace(self.min_lead, max(max_lead, self.min_lead) + 1, self.n_bins + 1)
         df["_bin"] = pd.cut(df[self.lead_col], bins=edges, include_lowest=True, right=False)
         by_prop: dict[str, pd.Series] = {}
         for prop, grp in df.groupby(self.property_col):

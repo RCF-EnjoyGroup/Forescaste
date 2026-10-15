@@ -196,3 +196,83 @@ def test_per_property_backtest_ventana_cubierta_por_reales():
     assert (bt["lead_days"] >= 1).all() and (bt["lead_days"] <= 30).all()
     # todo dentro de reales observados
     assert bt["stay_date"].max() <= dem_n["stay_date"].max()
+    # default legado documentado: sin selección, opera pickup_curve
+    assert set(bt["model_name"]) == {"pickup_curve"}
+
+
+def test_per_property_backtest_opera_el_modelo_indicado():
+    """El backtest de la corrida futura mide el campeón que se le pasa.
+
+    Remediación (hallazgo de revisión): per_property_backtest instanciaba
+    pickup_curve hardcodeado — las métricas publicadas en modo --futuro
+    describían un modelo que no era el operante (p. ej. una propiedad con
+    campeón xgboost publicaba métricas de la curva de pickup). Ahora
+    build_forecasts opera ``model_by_property`` (pipeline de producción) y la
+    columna ``model_name`` lo declara fila por fila.
+    """
+    dem, _, pick_raw = _sources()
+    from src.config import load_config
+    from src.data.schema import SourceKind, detect_schema
+    from src.forecasting.runner import _normalize_demand, _normalize_pickup
+
+    cfg = load_config(env={})
+    dem_n = _normalize_demand(
+        dem, detect_schema(dem, SourceKind.DEMAND, cfg.column_hints)
+    )
+    pick_n = _normalize_pickup(
+        pick_raw, detect_schema(pick_raw, SourceKind.PICKUP, cfg.column_hints)
+    )
+    cutoff = pd.Timestamp("2026-04-30")
+    prop = dem_n["property"].iloc[0]
+
+    bt_naive = per_property_backtest(
+        dem_n, pick_n, cutoff, horizon=30,
+        model_by_property={prop: "seasonal_naive"},
+    )
+    assert not bt_naive.empty
+    assert set(bt_naive["model_name"]) == {"seasonal_naive"}
+    # ventana y reales igual de exigibles con cualquier modelo
+    assert bt_naive["stay_date"].max() == cutoff
+    assert bt_naive["actual"].notna().all()
+
+    # el modelo que opera cambia el forecast (no es cosmética de etiquetas)
+    bt_curve = per_property_backtest(dem_n, pick_n, cutoff, horizon=30)
+    merged = bt_curve.merge(
+        bt_naive, on=["property", "stay_date"], suffixes=("_curve", "_naive")
+    )
+    assert len(merged) == len(bt_curve)
+    assert not np.allclose(merged["forecast_curve"], merged["forecast_naive"])
+
+
+def test_per_property_backtest_respeta_capacidad_y_piso():
+    """Con capacidad: el forecast evaluado es el PUBLICADO (piso/techo)."""
+    dem, cap_raw, pick_raw = _sources()
+    from src.config import load_config
+    from src.data.schema import SourceKind, detect_schema
+    from src.forecasting.core import _apply_aliases
+    from src.forecasting.runner import _normalize_capacity, _normalize_demand, _normalize_pickup
+
+    cfg = load_config(env={})
+    dem_a = _apply_aliases(
+        dem, detect_schema(dem, SourceKind.DEMAND, cfg.column_hints), cfg.property_aliases
+    )
+    cap_a = _apply_aliases(
+        cap_raw, detect_schema(cap_raw, SourceKind.CAPACITY, cfg.column_hints),
+        cfg.property_aliases,
+    )
+    pick_a = _apply_aliases(
+        pick_raw, detect_schema(pick_raw, SourceKind.PICKUP, cfg.column_hints),
+        cfg.property_aliases,
+    )
+    dem_n = _normalize_demand(dem_a, detect_schema(dem_a, SourceKind.DEMAND, cfg.column_hints))
+    pick_n = _normalize_pickup(pick_a, detect_schema(pick_a, SourceKind.PICKUP, cfg.column_hints))
+    cap_n = _normalize_capacity(cap_a, detect_schema(cap_a, SourceKind.CAPACITY, cfg.column_hints))
+
+    cutoff = pd.Timestamp("2026-04-30")
+    bt = per_property_backtest(dem_n, pick_n, cutoff, horizon=30, cap=cap_n)
+    assert not bt.empty
+    # techo de capacidad: la métrica jamás evalúa un forecast imposible
+    cap_win = cap_n.set_index("stay_date")["capacity"]
+    caps = bt["stay_date"].map(cap_win)
+    assert caps.notna().all(), "el merge de capacidad debe conectar (alias resuelto)"
+    assert (bt["forecast"] <= caps + 1e-9).all()

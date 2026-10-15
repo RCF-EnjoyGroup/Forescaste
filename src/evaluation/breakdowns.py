@@ -35,6 +35,64 @@ def lead_band(lead_days) -> str:
     return "90+"
 
 
+def interval_coverage(
+    df: pd.DataFrame,
+    property_col: str = "property",
+    actual_col: str = "actual",
+    p10_col: str = "p10_forecast",
+    p90_col: str = "p90_forecast",
+    lead_col: str = "lead_days",
+    nominal: float = 0.80,
+) -> dict | None:
+    """Cobertura empírica de la banda P10–P90 sobre la ventana evaluada.
+
+    Una banda honesta contiene el ``nominal`` (80%) de los reales; la
+    cobertura por propiedad y banda de lead expresa dónde la banda está
+    mal calibrada (sub-cobre = P90 demasiado estrecho para esa celda;
+    sobre-cubre = banda desperdiciada). Requiere ``p10``/``p90`` sobre la
+    MISMA ventana que los reales (corrida de verificación); sin banda
+    disponible devuelve ``None`` (corrida futura: la banda se publica sobre
+    el horizonte, que todavía no tiene reales).
+    """
+    cols = {actual_col, p10_col, p90_col}
+    if not cols <= set(df.columns):
+        return None
+    work = df.copy()
+    for c in cols:
+        work[c] = pd.to_numeric(work[c], errors="coerce")
+    work = work.dropna(subset=[actual_col, p10_col, p90_col])
+    if work.empty:
+        return None
+    in_band = (work[actual_col] >= work[p10_col]) & (work[actual_col] <= work[p90_col])
+
+    def _cover(frame: pd.DataFrame, flags: pd.Series) -> dict:
+        return {
+            "coverage": float(flags.mean()),
+            "n_obs": int(len(frame)),
+            "nominal": float(nominal),
+        }
+
+    by_property: list[dict] = []
+    for prop, grp_flags in in_band.groupby(work[property_col], observed=True):
+        row = {"property": str(prop)}
+        row.update(_cover(work.loc[grp_flags.index], grp_flags))
+        by_property.append(row)
+
+    by_band: list[dict] = []
+    bands = work[lead_col].map(lead_band) if lead_col in work.columns else None
+    if bands is not None:
+        for band, grp_flags in in_band.groupby(bands, observed=True):
+            row = {"lead_band": str(band)}
+            row.update(_cover(work.loc[grp_flags.index], grp_flags))
+            by_band.append(row)
+
+    return {
+        "global": _cover(work, in_band),
+        "by_property": sorted(by_property, key=lambda r: r["property"]),
+        "by_lead_band": sorted(by_band, key=lambda r: r["lead_band"]),
+    }
+
+
 def _metrics_by(
     df: pd.DataFrame,
     group_cols: list[str],

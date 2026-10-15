@@ -105,7 +105,7 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         if k in (
             "season_conditional", "holiday_conditional", "max_history_days",
             "min_stays_per_bucket", "min_stays_per_holiday_bucket",
-            "season_min_lead", "n_bins",
+            "season_min_lead", "n_bins", "bin_edges",
         )
     }
     if "season_conditional" in pickup_curve:
@@ -118,6 +118,13 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
     ):
         if int_key in pickup_curve and pickup_curve[int_key] is not None:
             pickup_curve[int_key] = int(pickup_curve[int_key])
+    if pickup_curve.get("bin_edges") is not None:
+        edges = [int(e) for e in (pickup_curve["bin_edges"] or [])]
+        if len(edges) < 2 or any(b <= a for a, b in zip(edges, edges[1:])):
+            raise ValueError(
+                f"pickup_curve.bin_edges debe ser una lista creciente (>= 2 bordes): {edges}"
+            )
+        pickup_curve["bin_edges"] = edges
 
     holidays_cfg = {
         "countries": [str(c).upper() for c in (data.get("holidays") or {}).get("countries") or []],

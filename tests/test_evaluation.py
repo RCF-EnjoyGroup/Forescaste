@@ -6,6 +6,7 @@ import pytest
 
 from src.evaluation.breakdowns import (
     LEAD_LABELS,
+    interval_coverage,
     lead_band,
     metrics_by_lead_band,
     metrics_by_property,
@@ -500,3 +501,103 @@ def test_seleccion_por_propiedad_fallback_global():
     assert result.by_property["sjo"] == "pickup_curve", "fallback al campeón global"
     assert "sjo" in result.property_fallback
     assert "sin selección propia" in result.property_fallback["sjo"]
+
+
+def _single_property_folds(winner_wmape: float, global_wmape: float) -> pd.DataFrame:
+    """2 candidatos × 4 folds para UNA propiedad, con wmape fijado por modelo.
+
+    Sin ruido ni estabilidad: el composite queda dominado por el WMAPE, así
+    el margen del override es controlable en el test.
+    """
+    rows = []
+    for fold in range(4):
+        rows.append(
+            {
+                "model": "pickup_curve", "fold": fold, "property": "corin",
+                "mape": global_wmape * 100, "wmape": global_wmape,
+                "mae": 10.0, "bias": 0.0,
+            }
+        )
+        rows.append(
+            {
+                "model": "lightgbm", "fold": fold, "property": "corin",
+                "mape": winner_wmape * 100, "wmape": winner_wmape,
+                "mae": 10.0, "bias": 0.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def test_override_por_propiedad_exige_margen_material():
+    """Un ganador local dentro del 5% del global NO desplaza al campeón.
+
+    Con 4 folds × 90d las diferencias pequeñas son ruido muestral: sin
+    margen el modelo por propiedad oscila entre corridas (churn observado
+    FIESTA/MARINA). La heterogeneidad se paga con evidencia.
+    """
+    # lightgbm 2% mejor que pickup_curve → dentro del margen → retenida
+    df = _single_property_folds(winner_wmape=0.098, global_wmape=0.100)
+    result = select_per_property(df, global_champion="pickup_curve")
+    assert result.by_property["corin"] == "pickup_curve"
+    assert "override retenida" in result.property_fallback["corin"]
+    assert "lightgbm" in result.property_fallback["corin"]
+
+    # lightgbm 10% mejor → supera el margen → opera
+    df = _single_property_folds(winner_wmape=0.090, global_wmape=0.100)
+    result = select_per_property(df, global_champion="pickup_curve")
+    assert result.by_property["corin"] == "lightgbm"
+    assert "corin" not in result.property_fallback
+
+    # margen 0 → comportamiento anterior (cualquier diferencia gana)
+    df = _single_property_folds(winner_wmape=0.098, global_wmape=0.100)
+    result = select_per_property(df, global_champion="pickup_curve", override_margin=0.0)
+    assert result.by_property["corin"] == "lightgbm"
+
+
+# ------------------- cobertura empírica de la banda P10-P90 --------------
+
+
+def test_interval_coverage_global_propiedad_y_banda():
+    """La cobertura de la banda se mide contra reales y se desglosa."""
+    df = pd.DataFrame(
+        {
+            "property": ["corin"] * 6 + ["fiesta"] * 6,
+            "stay_date": pd.date_range("2026-01-01", periods=6).tolist() * 2,
+            "lead_days": [1, 2, 5, 30, 61, 95] * 2,
+            "actual": [10.0, 12.0, 8.0, 15.0, 20.0, 50.0] * 2,
+            "forecast": [11.0] * 12,
+            # corin: banda estrecha a leads largos (sub-cubre 3/6);
+            # fiesta: banda ancha que cubre 6/6
+            "p10_forecast": [5.0, 5.0, 5.0, 25.0, 25.0, 25.0] + [0.0] * 6,
+            "p90_forecast": [25.0, 25.0, 25.0, 45.0, 45.0, 45.0] + [50.0] * 6,
+        }
+    )
+    cov = interval_coverage(df)
+    assert cov is not None
+    # global: corin cubre 3/6 (banda 5-25 cubre leads 1,2,5; la 25-45 deja
+    # fuera 15, 20 y 50), fiesta cubre 6/6 → 9/12
+    assert cov["global"]["coverage"] == pytest.approx(9 / 12)
+    assert cov["global"]["n_obs"] == 12
+    assert cov["global"]["nominal"] == pytest.approx(0.80)
+    by_prop = {r["property"]: r for r in cov["by_property"]}
+    assert by_prop["corin"]["coverage"] == pytest.approx(3 / 6)
+    assert by_prop["fiesta"]["coverage"] == pytest.approx(1.0)
+    by_band = {r["lead_band"]: r for r in cov["by_lead_band"]}
+    # banda 1-2: leads 1,2 de ambas propiedades dentro → 4/4
+    assert by_band["1-2"]["coverage"] == pytest.approx(1.0)
+    # banda 30-59: corin falla (15 < p10=25), fiesta cubre → 1/2
+    assert by_band["30-59"]["coverage"] == pytest.approx(0.5)
+
+
+def test_interval_coverage_sin_banda_devuelve_none():
+    """Sin columnas p10/p90 (corrida futura) no se mide cobertura: None."""
+    df = pd.DataFrame(
+        {
+            "property": ["corin"],
+            "stay_date": [pd.Timestamp("2026-01-01")],
+            "lead_days": [1],
+            "actual": [10.0],
+            "forecast": [11.0],
+        }
+    )
+    assert interval_coverage(df) is None

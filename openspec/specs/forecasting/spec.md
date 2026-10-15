@@ -34,6 +34,7 @@ El sistema SHALL evaluar como mínimo: Seasonal Naive (baseline obligatorio), Pi
 - **WHEN** se ejecuta el benchmark de modelos
 - **THEN** Seasonal Naive y Pickup Curve están incluidos y sus métricas se reportan
 - **THEN** un modelo complejo solo se declara superior si supera consistentemente a los baselines
+- **THEN** Seasonal Naive usa la media de las últimas K ocurrencias del mismo día de semana (no una única observación): el benchmark solo es creíble si ganarle al baseline cuesta algo
 
 #### Scenario: Selección de campeón
 - **WHEN** termina la evaluación de candidatos
@@ -45,6 +46,13 @@ El sistema SHALL evaluar como mínimo: Seasonal Naive (baseline obligatorio), Pi
 - **THEN** el forecast de esa corrida lo genera el modelo campeón (sin modelo de producción fijado en el código)
 - **THEN** el manifiesto, la tabla de forecast y el dataset Power BI declaran el mismo campeón que el benchmark
 - **THEN** ningún entregable de la misma corrida declara un campeón distinto de otro
+
+#### Scenario: El campeón opera la evaluación de la corrida futura
+- **WHEN** la corrida es futura y las métricas provienen de un backtest sobre la ventana anterior al corte
+- **THEN** esa ventana es operada por el campeón seleccionado as-of al inicio de la ventana de backtest, con el mismo pipeline de producción (fit/predict/blend) del forecast
+- **THEN** la selección usada se calcula con folds que terminan ANTES de la ventana evaluada (sin ventaja retrospectiva)
+- **THEN** las métricas evalúan el forecast publicado: piso de reservas y techo de capacidad aplicados antes de medir
+- **THEN** el manifiesto declara los modelos que operaron la evaluación (`eval_model_by_property`)
 
 #### Scenario: Campeón GBM con blend por lead
 - **WHEN** el campeón de una propiedad es un modelo ML con rollout recursivo y el auto-diagnóstico detecta colapso del rollout a largo lead
@@ -87,6 +95,11 @@ El sistema SHALL permitir que cada propiedad tenga su propio modelo ganador cuan
 #### Scenario: Evidencia insuficiente por propiedad
 - **WHEN** una propiedad no acumula folds suficientes para una selección propia fiable
 - **THEN** esa propiedad se opera con el campeón global y la fallback queda registrada en el manifiesto
+
+#### Scenario: Override exige margen de materialidad
+- **WHEN** el ganador local de una propiedad no es el campeón global
+- **THEN** solo desplaza al campeón global si lo supera por el margen de materialidad configurado (default 5% relativo del score compuesto en esa propiedad)
+- **THEN** dentro del margen la propiedad retiene al campeón global y la retención queda documentada en el fallback con los scores
 
 
 ### Requirement: Restricción de capacidad física

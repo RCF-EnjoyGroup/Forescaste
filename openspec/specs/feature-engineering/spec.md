@@ -82,7 +82,16 @@ El sistema SHALL crear: RN reservados actuales, lead days, pickup de los último
 
 
 ### Requirement: Curvas de pickup no lineales
-El sistema SHALL modelar el pickup como una curva no lineal por lead time, propiedad, día de la semana, mes, temporada, cercanía a la fecha de estancia, demanda histórica y nivel actual de reservas, sin asumir linealidad. La curva SHALL condicionarse por la temporada de la fecha de estancia (alta/media/baja) y por la ventana de feriado O evento privado que contenga la fecha — los eventos con propiedad asignada solo condicionan a esa propiedad — entrenarse con una ventana de recencia configurable y degradar con fallback explícito cuando un bucket no acumule evidencia suficiente.
+El sistema SHALL modelar el pickup como una curva no lineal por lead time, propiedad, día de la semana, mes, temporada, cercanía a la fecha de estancia, demanda histórica y nivel actual de reservas, sin asumir linealidad. La curva SHALL condicionarse por la temporada de la fecha de estancia (alta/media/baja) y por la ventana de feriado O evento privado que contenga la fecha — los eventos con propiedad asignada solo condicionan a esa propiedad — entrenarse con una ventana de recencia configurable y degradar con fallback explícito cuando un bucket no acumule evidencia suficiente. Los bins de lead SHALL soportar bordes explícitos configurables (`bin_edges`), densos a leads cortos donde la curva de reservas es más cóncava, con el último borde como catch-all.
+
+#### Scenario: Gradiente fino a leads cortos
+- **WHEN** la curva se ajusta con bordes densos a leads cortos (p. ej. [1, 3, 7, 14, 21, 30, …])
+- **THEN** leads operativos adyacentes (p. ej. 1 vs 9) reciben pickups esperados distintos cuando los datos los tengan — sin comprimir el gradiente hacia la media del bin
+- **THEN** los leads por encima del último borde caen en el bin catch-all (nunca NaN ni fuera de rango)
+
+#### Scenario: Validación de bordes
+- **WHEN** la configuración declara bordes no crecientes, con menos de 2 elementos o con el primer borde por debajo del lead mínimo
+- **THEN** la configuración falla con error explícito antes de entrenar
 
 #### Scenario: Trayectoria bookings → pickup → final
 - **WHEN** se evalúa una fecha con distintos lead times

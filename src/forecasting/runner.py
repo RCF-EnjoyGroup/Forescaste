@@ -35,6 +35,7 @@ from src.backtesting.snapshots import clear_cache, run_backtest
 from src.config import EngineConfig, load_config
 from src.data.schema import SourceKind, SourceSchema, detect_schema
 from src.evaluation.breakdowns import (
+    interval_coverage,
     lead_band,
     metrics_by_lead_band,
     metrics_by_property,
@@ -486,6 +487,7 @@ def run_end_to_end(
     fold_predictions: pd.DataFrame | None = None,
     error_panel: pd.DataFrame | None = None,
     eval_frame: pd.DataFrame | None = None,
+    eval_models: dict[str, str] | None = None,
     backtest_cfg: dict | None = None,
 ) -> E2EResult:
     """Ejecuta la cadena completa y verifica los criterios de aceptación.
@@ -508,6 +510,10 @@ def run_end_to_end(
     pronóstico todavía no tiene reales —corrida **futura**—: en ese caso las
     métricas provienen del backtest y el manifiesto lo etiqueta como
     ``metrics_source: injected_backtest`` (nunca se inventan reales).
+    ``eval_models`` declara el modelo que operó cada propiedad en esa
+    evaluación (selección as-of al inicio de la ventana de backtest): el
+    manifiesto lo publica como ``eval_model_by_property`` — las métricas
+    describen lo que opera, no un modelo distinto.
     """
     config = config or load_config()
     run_dir = Path(run_dir)
@@ -797,6 +803,13 @@ def run_end_to_end(
             "property_weekly": metrics_by_property_weekly(eval_src),
             **metrics_by_seasonality(eval_src),
         }
+        # cobertura empírica de la banda P10–P90 sobre la MISMA ventana con
+        # reales (corrida de verificación); sin banda sobre la ventana (p. ej.
+        # corrida futura: la banda vive en el horizonte, que no tiene reales)
+        # queda en None y el accuracy report lo documenta
+        coverage = interval_coverage(eval_src)
+    else:
+        coverage = None
 
     evaluated_props = (
         sorted(eval_src["property"].dropna().unique()) if eval_src is not None else []
@@ -941,6 +954,12 @@ def run_end_to_end(
             "benchmark_source": benchmark_source,
             "interval_source": interval_source,
             "metrics_source": metrics_source,
+            # modelos que operaron la EVALUACIÓN inyectada (selección as-of al
+            # inicio de la ventana de backtest): las métricas publicadas
+            # describen estos modelos, no otros
+            "eval_model_by_property": (
+                _jsonable(eval_models) if eval_models else None
+            ),
             "forecast_window": {
                 "start": str((cutoff + pd.Timedelta(days=1)).date()),
                 "end": str((cutoff + pd.Timedelta(days=horizon_days)).date()),
@@ -984,6 +1003,21 @@ def run_end_to_end(
                 breakdowns.get("property_weekly", pd.DataFrame()).to_dict("records")
             ),
             "evaluation_coverage": _jsonable(evaluation_coverage),
+            # cobertura empírica P10–P90: una banda honesta contiene el 80%
+            # nominal de los reales; el desglose por propiedad/banda expone
+            # las celdas mal calibradas (p. ej. P90 estrecho en la propiedad
+            # más grande). Sin banda sobre la ventana evaluada se documenta.
+            "interval_coverage": (
+                _jsonable(coverage)
+                if coverage is not None
+                else {
+                    "note": (
+                        "banda P10-P90 no disponible sobre la ventana evaluada "
+                        "(la banda se publica sobre el horizonte de pronóstico, "
+                        "que aún no tiene reales)"
+                    )
+                }
+            ),
         }
     else:
         accuracy_report = {"note": "sin reales en esta corrida"}
@@ -1008,6 +1042,8 @@ def run_end_to_end(
             model_by_property=model_by_property,
             benchmark_source=benchmark_source,
             interval_source=interval_source,
+            interval_coverage=coverage,
+            eval_models=eval_models,
             excluded_props_map=excluded_props_map,
             curve_params=curve_params,
             holiday_calendar_md=(
@@ -1144,6 +1180,8 @@ def _technical_doc(
     model_by_property: dict[str, str] | None = None,
     benchmark_source: str = "real_backtest",
     interval_source: str = "real_backtest",
+    interval_coverage: dict | None = None,
+    eval_models: dict[str, str] | None = None,
     excluded_props_map: dict[str, str] | None = None,
     curve_params: dict | None = None,
     holiday_calendar_md: str | None = None,
@@ -1159,8 +1197,12 @@ def _technical_doc(
     wmape = metrics.get("wmape", float("nan"))
     metrics_note = (
         "- **Origen de las métricas**: backtest real sobre la ventana ANTERIOR al "
-        "corte (la ventana de pronóstico es futura y aún no tiene reales); "
-        "el manifiesto lo marca como `metrics_source: injected_backtest`.\n"
+        "corte (la ventana de pronóstico es futura y aún no tiene reales). La "
+        "selección del campeón se repite **as-of** al inicio de esa ventana y el "
+        "campeón resultante la opera: las métricas miden el pipeline completo "
+        "(selección + forecast) sin ventaja retrospectiva. El manifiesto lo marca "
+        "como `metrics_source: injected_backtest` y declara los modelos que "
+        "operaron la evaluación (`eval_model_by_property`).\n"
         if metrics_source == "injected_backtest"
         else "- **Origen de las métricas**: reales observados dentro de la ventana del horizonte.\n"
     )
@@ -1168,6 +1210,18 @@ def _technical_doc(
     per_prop_md = (
         "\n".join(f"  - {p}: `{m}`" for p, m in sorted(per_prop.items())) or "  - (todas con el campeón global)"
     )
+    if eval_models:
+        eval_md = (
+            "\n".join(f"  - {p}: `{m}`" for p, m in sorted(eval_models.items()))
+            or "  - (campeón global)"
+        )
+        eval_block = (
+            "### Modelos que operaron la evaluación (selección as-of al inicio de la "
+            "ventana de backtest)\n"
+            f"{eval_md}\n"
+        )
+    else:
+        eval_block = ""
     excluded_md = (
         "\n".join(f"  - {p}: cerrada (excluida por configuración)" for p in sorted(excluded_props_map))
         or "  - (ninguna)"
@@ -1196,6 +1250,20 @@ def _technical_doc(
         if interval_source == "real_backtest"
         else "residuos sintéticos de reemplazo (etiquetados en el manifiesto)"
     )
+    if interval_coverage is not None:
+        g = interval_coverage.get("global", {})
+        cov_pct = float(g.get("coverage", float("nan"))) * 100
+        n_cov = int(g.get("n_obs", 0))
+        coverage_md = (
+            f"- Cobertura empírica en la ventana evaluada: {cov_pct:.1f}% "
+            f"(nominal 80%, n={n_cov}) — desglose por propiedad y banda de lead "
+            "en `interval_coverage` del accuracy report.\n"
+        )
+    else:
+        coverage_md = (
+            "- Cobertura empírica: no medible en esta corrida (la banda vive sobre "
+            "el horizonte de pronóstico, que aún no tiene reales).\n"
+        )
     return f"""# Documentación técnica — Room Nights Forecasting Engine
 
 {disclaimer}
@@ -1206,10 +1274,12 @@ def _technical_doc(
 - **Curva de pickup**: {curve_md}
 - **Selección por propiedad**:
 {per_prop_md}
-- **Propiedades cerradas (excluidas)**:
+{eval_block}- **Propiedades cerradas (excluidas)**:
 {excluded_md}
 - La significancia de la selección (Diebold-Mariano) queda en el manifiesto
   (`champion_significance`); un empate estadístico se desempata por parsimonia.
+- El override por propiedad exige un margen de materialidad sobre el campeón
+  global (diferencias pequeñas entre 4 folds son ruido, no evidencia).
 
 ## Fuentes
 Las tres fuentes exclusivas: `capacity_daily`, `demand_daily`, `pickup_by_lead`.
@@ -1229,7 +1299,7 @@ Detección automática de esquema (sin asumir nombres de columna).
 ## Intervalos P10/P50/P90
 - Anclados al punto publicado (`p50 = final_forecast_rn`), capados a capacidad.
 - Calibración: {interval_note}.
-
+{coverage_md}
 ## Limitaciones del modelo
 1. Sin datos externos: clima, competencia y eventos propietarios fuera de alcance.
 2. ETS/SARIMAX se entrenan sobre series posicionales: con huecos severos el paso

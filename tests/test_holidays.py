@@ -206,14 +206,23 @@ def test_umbral_propio_para_buckets_de_feriado():
 def test_ml_feature_dias_a_feriado():
     cal = build_holiday_calendar(range(2025, 2027), ("CR", "US"), window_days=4)
     vals = np.full(400, 50.0)
-    row = _ml_row(vals, 399, pd.Timestamp("2026-12-25"), 20.0, cal)
+    row = _ml_row(vals, 399, pd.Timestamp("2026-12-25"), 20.0, cal, lead=10.0)
     assert row["days_to_nearest_holiday"] == 0.0
-    row_3 = _ml_row(vals, 399, pd.Timestamp("2026-12-28"), 20.0, cal)
+    assert row["lead_days"] == 10.0
+    row_3 = _ml_row(vals, 399, pd.Timestamp("2026-12-28"), 20.0, cal, lead=3.0)
     assert row_3["days_to_nearest_holiday"] == 3.0
-    # sin calendario → NaN (la columna SIEMPRE está en la matriz)
-    row_none = _ml_row(vals, 399, pd.Timestamp("2026-12-25"), 20.0, None)
+    # sin calendario → NaN (la columna SIEMPRE está en la matriz); el lead es
+    # exógeno y no depende del calendario
+    row_none = _ml_row(vals, 399, pd.Timestamp("2026-12-25"), 20.0, None, lead=10.0)
     assert np.isnan(row_none["days_to_nearest_holiday"])
+    assert row_none["lead_days"] == 10.0
+    # sin lead → NaN (la fila del panel sin lead no debe fingir la señal)
+    row_nolead = _ml_row(vals, 399, pd.Timestamp("2026-12-25"), 20.0, cal)
+    assert np.isnan(row_nolead["lead_days"])
     assert "days_to_nearest_holiday" in ML_FEATURES
+    # el lead de la estancia es feature de primera clase para los GBM:
+    # sin él solo distinguen leads a través del booked (versión ruidosa)
+    assert "lead_days" in ML_FEATURES
 
 
 def test_calendario_llega_al_candidato_ml_y_a_la_curva():

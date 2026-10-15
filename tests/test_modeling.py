@@ -40,9 +40,32 @@ def test_seasonal_naive_produce_por_propiedad_fecha():
     assert out["stay_date"].notna().all()
     assert out["forecast_rn"].notna().all()
     assert (out["forecast_rn"] > 0).all()
-    # lunes 2026-02-02 => último lunes anterior = 2026-01-26 (día 21 => 121)
+    # lunes 2026-02-02 => media de las últimas 4 ocurrencias del mismo DOW:
+    # 2026-01-05 (100), 01-12 (107), 01-19 (114), 01-26 (121) → 110.5
     mon = out.loc[out["stay_date"] == pd.Timestamp("2026-02-02"), "forecast_rn"].iloc[0]
-    assert mon == pytest.approx(121)
+    assert mon == pytest.approx(110.5)
+
+
+def test_seasonal_naive_media_ultimas_k_ocurrencias():
+    """El baseline usa la MEDIA de las últimas K ocurrencias del mismo DOW.
+
+    Una sola observación es un contrincante débil: el benchmark entero
+    pierde credibilidad si los candidatos 'ganan' contra ruido. Con K=4 el
+    ruido se suaviza sin aplanar la estacionalidad semanal.
+    """
+    # 56 días = 8 semanas → 8 ocurrencias de cada DOW
+    hist = pd.DataFrame(
+        {
+            "stay_date": pd.date_range("2026-01-05", periods=56, freq="D"),
+            "room_nights": np.arange(56) + 100,
+        }
+    )
+    mon = pd.Timestamp("2026-03-02")
+    # los 8 lunes previos: 2026-01-05..2026-02-23 → valores 100, 107, ..., 149
+    for k, expected in [(1, 149.0), (2, 145.5), (4, 138.5), (8, 124.5)]:
+        model = SeasonalNaive(dow_window=k).fit(hist)
+        out = model.predict(pd.DatetimeIndex([mon]))
+        assert out["forecast_rn"].iloc[0] == pytest.approx(expected)
 
 
 def test_seasonal_naive_multi_propiedad():
@@ -123,6 +146,81 @@ def test_pickup_curve_fora_de_rango_usa_extremo():
     out = model.predict(req)
     assert out["forecast_rn"].iloc[0] >= 50
     assert np.isfinite(out["forecast_rn"].iloc[0])
+
+
+def _short_lead_curves_df():
+    """Curvas con gradiente fuerte a leads cortos: lead 1 ≈ 0, lead 9 ≈ 21.
+
+    Con bins UNIFORMES de ~9 días (n_bins=10 sobre lead<=90) el lead 1 y el
+    9 comparten bin: la curva comprime el gradiente hacia la media del bin y
+    sobre-pronostica al cierre de la reserva.
+    """
+    rows = []
+    rng = np.random.default_rng(7)
+    for stay in pd.date_range("2026-03-01", periods=12, freq="7D"):
+        for lead in [1, 2, 3, 5, 7, 9, 14, 21, 30, 45, 60, 90]:
+            remaining = max(67.0 * (1.0 - np.exp(-lead / 9.0)) + rng.normal(0, 0.5), 0.0)
+            rows.append(
+                {
+                    "property": "corin",
+                    "stay_date": stay,
+                    "lead_days": lead,
+                    "pickup_rn": remaining,
+                    "current_booked_rn": 50.0,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_bin_edges_densos_resuelven_gradiente_corto():
+    """Bordes explícitos: lead 1 y lead 9 NO comparten pickup esperado."""
+    req = pd.DataFrame(
+        {
+            "property": ["corin"] * 2,
+            "stay_date": [pd.Timestamp("2026-05-30")] * 2,
+            "lead_days": [1, 9],
+            "current_booked_rn": [50.0, 50.0],
+        }
+    )
+    # bins uniformes: [1, 10.9) agrupa leads 1..9 → mismo pickup
+    uniform = PickupCurveModel(n_bins=10).fit(_short_lead_curves_df())
+    pu = uniform.predict(req)["expected_pickup_rn"].to_numpy()
+    # bordes densos: [1,3), [3,7), [7,14) separan el gradiente
+    dense = PickupCurveModel(bin_edges=[1, 3, 7, 14, 21, 30, 45, 60, 90]).fit(
+        _short_lead_curves_df()
+    )
+    pd_pick = dense.predict(req)["expected_pickup_rn"].to_numpy()
+    assert pu[0] == pu[1], "precondición: bins uniformes agrupan lead 1 y 9"
+    assert pd_pick[1] > pd_pick[0] + 5.0, (
+        f"bins densos deben separar el gradiente: lead1={pd_pick[0]:.1f} "
+        f"lead9={pd_pick[1]:.1f}"
+    )
+
+
+def test_bin_edges_catch_all_mas_alla_del_ultimo_borde():
+    """Leads ≥ último borde caen en el bin final (catch-all), sin NaN."""
+    model = PickupCurveModel(bin_edges=[1, 3, 7, 14, 21, 30]).fit(_short_lead_curves_df())
+    req = pd.DataFrame(
+        {
+            "property": ["corin"] * 3,
+            "stay_date": [pd.Timestamp("2026-05-30")] * 3,
+            "lead_days": [45, 90, 400],
+            "current_booked_rn": [50.0, 50.0, 50.0],
+        }
+    )
+    out = model.predict(req)
+    assert out["expected_pickup_rn"].notna().all()
+    # los tres leads largos comparten el bin catch-all → mismo pickup
+    assert out["expected_pickup_rn"].nunique() == 1
+
+
+def test_bin_edges_validacion_estrictamente_crecientes():
+    with pytest.raises(ValueError, match="estrictamente crecientes"):
+        PickupCurveModel(bin_edges=[1, 5, 5, 9]).fit(_curves_df())
+    with pytest.raises(ValueError, match="estrictamente crecientes"):
+        PickupCurveModel(bin_edges=[7, 3]).fit(_curves_df())
+    with pytest.raises(ValueError, match="min_lead"):
+        PickupCurveModel(bin_edges=[0, 3, 7]).fit(_curves_df())
 
 
 # ----------------------------- 5.3 ETS / SARIMAX -------------------------

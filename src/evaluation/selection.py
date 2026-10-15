@@ -25,6 +25,15 @@ from src.evaluation.metrics import diebold_mariano
 BIAS_PENALTY = 0.5  # peso de |bias| relativo al WMAPE en el score compuesto
 STABILITY_WEIGHT = 0.25  # peso de la volatilidad del WMAPE entre ventanas
 MIN_FOLDS_PER_PROPERTY = 3
+# margen de materialidad del override por propiedad: un candidato local solo
+# desplaza al campeón global si lo supera por > 5% relativo del score
+# compuesto EN ESA PROPIEDAD. Con 4 folds × 90d las diferencias pequeñas
+# están dentro del ruido muestral (el DM solo corre campeón vs subcampeón
+# GLOBAL) y sin margen el modelo por propiedad oscila entre corridas —
+# churn observado: FIESTA lightgbm↔seasonal_naive, MARINA lightgbm↔xgboost.
+# Mismo espíritu que BLEND_ACCURACY_MARGIN: la heterogeneidad se paga con
+# evidencia, no con empates.
+PROPERTY_OVERRIDE_MARGIN = 0.05
 # composite ponderado por lead: los leads operativos (1-30) pesan ~2.8x por
 # día que los de planeación (31-89) — un candidato plano no gana por
 # "consistencia" en el rango largo mientras destruye el patrón del corto
@@ -273,11 +282,18 @@ def select_per_property(
     fold_col: str = "fold",
     property_col: str = "property",
     global_champion: str | None = None,
+    override_margin: float = PROPERTY_OVERRIDE_MARGIN,
 ) -> SelectionResult:
     """6.8 — Selección por propiedad con mínimo de ventanas y fallback global.
 
     Propiedades sin ``min_folds`` ventanas por candidato caen al campeón
     global y se marcan en ``property_fallback`` como 'sin selección propia'.
+
+    Con ``override_margin > 0``: un ganador local que no sea el campeón
+    global solo opera si supera el score del campeón global EN ESA
+    PROPIEDAD por el margen relativo dado; de lo contrario la propiedad
+    retiene al campeón global y el fallback documenta la retención —
+    4 folds no distinguen empates (estabilidad entre corridas).
     """
     fold_metrics = _without_portfolio_rows(fold_metrics, property_col)
     if global_champion is None:
@@ -303,6 +319,21 @@ def select_per_property(
             continue
         scores = score_candidates(usable, model_col, fold_col)
         winner = min(scores, key=lambda s: s.composite)
+        if winner.model != global_champion and override_margin > 0:
+            global_score = next(
+                (s for s in scores if s.model == global_champion), None
+            )
+            if global_score is not None and winner.composite > (
+                global_score.composite * (1.0 - override_margin)
+            ):
+                by_property[str(prop)] = global_champion
+                fallback[str(prop)] = (
+                    f"override retenida: '{winner.model}' "
+                    f"({winner.composite:.4f}) no supera el margen "
+                    f"{override_margin:.0%} sobre el campeón global "
+                    f"'{global_champion}' ({global_score.composite:.4f})"
+                )
+                continue
         by_property[str(prop)] = winner.model
 
     return SelectionResult(

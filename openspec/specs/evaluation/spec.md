@@ -114,9 +114,10 @@ El sistema SHALL evaluar cada candidato con un protocolo íntegro: features de e
 - **THEN** cada paso usa las features as-of del paso que se predice
 - **THEN** el rollout no degrada a un forecast plano por desalineación de filas
 
-#### Scenario: Señal de pickup en candidatos ML
+#### Scenario: Señal de pickup y lead en candidatos ML
 - **WHEN** se entrenan los candidatos ML
 - **THEN** disponen de la señal de pickup as-of (RN ya reservados y su evolución) como feature cuando los datos la proveen
+- **THEN** disponen del lead de la estancia respecto al corte (`lead_days`) como feature de primera clase — exógena, conocida a cualquier lead sin fuga, con la misma semántica en panel (lead del snapshot) y horizonte (`stay − cutoff`)
 
 #### Scenario: Comparabilidad de candidatos
 - **WHEN** el benchmark compara candidatos clásicos y ML
@@ -164,3 +165,19 @@ El sistema SHALL reportar qué propiedades y fechas participan efectivamente en 
 #### Scenario: Cobertura visible en KPIs
 - **WHEN** se publica una métrica global de la corrida
 - **THEN** el número de propiedades evaluadas frente al total del portafolio es visible junto a la métrica
+
+
+### Requirement: Cobertura empírica de la banda de incertidumbre
+El sistema SHALL publicar la cobertura empírica de la banda P10–P90 contra el nominal 80% — global, por propiedad y por banda de lead — cuando la ventana evaluada disponga de reales y banda; sin banda sobre la ventana evaluada (corrida futura) el reporte SHALL documentarlo en lugar de omitir la métrica en silencio.
+
+#### Scenario: Banda calibrada
+- **WHEN** la banda contiene ~80% de los reales de la ventana evaluada
+- **THEN** la cobertura global se reporta junto al nominal y al n de observaciones
+
+#### Scenario: Celda mal calibrada visible
+- **WHEN** una propiedad o banda de lead sub-cubre o sobre-cubre frente al nominal
+- **THEN** el desglose por propiedad y por banda expone la celda sin agregación que la oculte
+
+#### Scenario: Sin banda sobre la ventana evaluada
+- **WHEN** la corrida es futura y la banda vive sobre el horizonte aún sin reales
+- **THEN** el accuracy report publica una nota explicando por qué no hay cobertura medible
