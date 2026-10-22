@@ -313,7 +313,39 @@ def build_intervals(
         else None
     )
 
-    def _shifts(res: pd.Series) -> tuple[float, float]:
+    def _cell_values(cell: object) -> tuple[np.ndarray, np.ndarray | None]:
+        """Celda de residuos → (valores, pesos|None).
+
+        Acepta Series/arrays (sin pesos — back-compat con el pool del
+        backtest y tests) o DataFrame con columnas ``residual``/``weight``
+        (celdas del forecast operativo con ponderación de recencia).
+        """
+        if isinstance(cell, pd.DataFrame):
+            ok = cell.dropna(subset=["residual"])
+            if ok.empty:
+                return np.array([]), None
+            weights = (
+                pd.to_numeric(ok["weight"], errors="coerce").fillna(1.0).to_numpy(dtype=float)
+                if "weight" in ok.columns else None
+            )
+            return ok["residual"].to_numpy(dtype=float), weights
+        if isinstance(cell, pd.Series):
+            return pd.Series(cell).dropna().to_numpy(dtype=float), None
+        return np.asarray(cell, dtype=float), None
+
+    def _wquantile(vals: np.ndarray, weights: np.ndarray, q: float) -> float:
+        """Cuantil ponderado: interpolación sobre pesos acumulados."""
+        if weights is None or not np.isfinite(weights).all() or float(weights.sum()) <= 0:
+            return float(np.quantile(vals, q))
+        order = np.argsort(vals)
+        v, w = vals[order], np.clip(weights[order], 0.0, None)
+        cw = np.cumsum(w) - 0.5 * w
+        total = cw[-1]
+        if total <= 0:
+            return float(np.quantile(vals, q))
+        return float(np.interp(q, cw / total, v))
+
+    def _shifts(res: object) -> tuple[float, float]:
         """Cuantiles COMPLETOS del residuo: (−q90, −q10) — calibración conformal.
 
         La banda describe la distribución TOTAL del error del punto
@@ -325,12 +357,21 @@ def build_intervals(
         el sesgo. Con cuantiles completos la banda contiene el 80% de los
         residuos de calibración POR CONSTRUCCIÓN; el sesgo sistemático se
         corrige en el PUNTO (``lead_bias_factors``) y la asimetría
-        restante la absorbe la banda.
+        restante la absorbe la banda. Con pesos de recencia, los residuos
+        de folds recientes dominan los cuantiles: la banda sigue al
+        régimen vigente en vez de promediar el año previo.
+
+        Acepta celdas (Series/DataFrame/array) o la tupla
+        ``(valores, pesos)`` producida por el pooling de la escalera.
         """
-        vals = pd.Series(res).dropna().to_numpy(dtype=float)
+        if isinstance(res, tuple) and len(res) == 2:
+            vals, weights = res
+            vals = np.asarray(vals, dtype=float)
+        else:
+            vals, weights = _cell_values(res)
         if len(vals) == 0:
             return 0.0, 0.0
-        qs = np.quantile(vals, list(levels))
+        qs = [_wquantile(vals, weights, lvl) for lvl in levels]
         return float(-qs[2]), float(-qs[0])
 
     global_shift = _shifts(residuals) if residuals is not None else None
@@ -350,19 +391,28 @@ def build_intervals(
         )
         if prop_aware:
             # pools de la escalera: (prop, banda) -> prop -> banda -> global
-            prop_pool: dict[str, list[pd.Series]] = {}
-            band_pool: dict[str, list[pd.Series]] = {}
-            all_res: list[pd.Series] = []
+            # las celdas pueden traer pesos de recencia (DataFrame residual/
+            # weight) o ser Series sin peso — el pooling preserva los pesos
+            prop_pool: dict[str, list[tuple[np.ndarray, np.ndarray | None]]] = {}
+            band_pool: dict[str, list[tuple[np.ndarray, np.ndarray | None]]] = {}
+            all_res: list[tuple[np.ndarray, np.ndarray | None]] = []
             for (p, b), res in residual_bands.items():
-                res = pd.Series(res).dropna()
-                if len(res) == 0:
+                vals, weights = _cell_values(res)
+                if len(vals) == 0:
                     continue
-                prop_pool.setdefault(str(p), []).append(res)
-                band_pool.setdefault(str(b), []).append(res)
-                all_res.append(res)
-            prop_pool = {p: pd.concat(v, ignore_index=True) for p, v in prop_pool.items()}
-            band_pool = {b: pd.concat(v, ignore_index=True) for b, v in band_pool.items()}
-            global_series = pd.concat(all_res, ignore_index=True)
+                prop_pool.setdefault(str(p), []).append((vals, weights))
+                band_pool.setdefault(str(b), []).append((vals, weights))
+                all_res.append((vals, weights))
+
+            def _pool_concat(cells: list[tuple[np.ndarray, np.ndarray | None]]):
+                vals = np.concatenate([c[0] for c in cells]) if cells else np.array([])
+                if any(c[1] is not None for c in cells):
+                    w = np.concatenate([
+                        c[1] if c[1] is not None else np.ones(len(c[0]))
+                        for c in cells
+                    ])
+                    return vals, w
+                return vals, None
 
             row_bands = (
                 out[lead_col].map(lead_band).to_numpy()
@@ -377,20 +427,20 @@ def build_intervals(
                 key = (str(p), str(b))
                 if key not in shift_cache:
                     res = residual_bands.get((str(p), str(b)))
-                    res = pd.Series(res).dropna() if res is not None else None
-                    if res is not None and len(res) >= min_residuals:
+                    vals, weights = _cell_values(res) if res is not None else (np.array([]), None)
+                    if len(vals) >= min_residuals:
                         shift_cache[key] = _shifts(res)
                     else:
                         lvl_prop = prop_pool.get(str(p))
                         lvl_band = band_pool.get(str(b))
-                        if lvl_prop is not None and len(lvl_prop) >= min_residuals:
-                            shift_cache[key] = _shifts(lvl_prop)
+                        if lvl_prop is not None and sum(len(c[0]) for c in lvl_prop) >= min_residuals:
+                            shift_cache[key] = _shifts(_pool_concat(lvl_prop))
                             escalera.add(f"pool_propiedad:{p}")
-                        elif lvl_band is not None and len(lvl_band) >= min_residuals:
-                            shift_cache[key] = _shifts(lvl_band)
+                        elif lvl_band is not None and sum(len(c[0]) for c in lvl_band) >= min_residuals:
+                            shift_cache[key] = _shifts(_pool_concat(lvl_band))
                             escalera.add(f"pool_banda:{b}")
                         else:
-                            shift_cache[key] = _shifts(global_series)
+                            shift_cache[key] = _shifts(_pool_concat(all_res))
                             escalera.add("pool_global")
                 lo, hi = shift_cache[key]
                 p10[i] = p10[i] + lo

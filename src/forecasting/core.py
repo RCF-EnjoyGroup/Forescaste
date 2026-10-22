@@ -670,7 +670,8 @@ def operative_residual_bands(
     blend_by_property: dict[str, dict],
     dem: pd.DataFrame,
     bias_factors: dict[tuple[str, str], float] | None = None,
-) -> dict[tuple[str, str], pd.Series]:
+    recency_decay: float = 1.0,
+) -> dict[tuple[str, str], pd.DataFrame]:
     """Residuos del forecast OPERATIVO por (propiedad, banda de lead).
 
     Ensambla por fold el forecast que opera en producción — campeón con
@@ -684,6 +685,13 @@ def operative_residual_bands(
     del forecast CORREGIDO: ``forecast·factor − actual`` — la banda calibra
     el pipeline completo que se publica (punto corregido + banda), no una
     versión intermedia.
+
+    Con ``recency_decay < 1.0`` los residuos salen como DataFrame
+    ``(residual, weight)`` con peso ``decay^(edad del fold)``: en un
+    portafolio en transición de régimen, el trimestre reciente describe
+    mejor el error vigente que hace un año — los cuantiles de la banda se
+    ponderan (``build_intervals``). ``1.0`` emite pesos uniformes
+    (equivalente al comportamiento sin ponderación).
     """
     from src.evaluation.breakdowns import lead_band
 
@@ -694,13 +702,23 @@ def operative_residual_bands(
         return {}
     work = frame.copy()
     work["lead_band"] = work["lead_days"].map(lead_band)
-    out: dict[tuple[str, str], pd.Series] = {}
+    # edad del fold: el más reciente (máximo índice) pesa 1.0, el anterior
+    # decay, y así hacia atrás — los folds tesian el año previo al corte
+    max_fold = int(work["fold"].max()) if "fold" in work.columns else 0
+    decay = float(min(max(recency_decay, 0.0), 1.0))
+    work["weight"] = decay ** (max_fold - pd.to_numeric(work["fold"], errors="coerce").fillna(0))
+    work["weight"] = work["weight"].fillna(1.0)
+
+    out: dict[tuple[str, str], pd.DataFrame] = {}
     for (prop, band), grp in work.groupby(["property", "lead_band"], observed=True):
         factor = float((bias_factors or {}).get((str(prop), str(band)), 1.0))
-        res = (grp["forecast"] * factor - grp["actual"]).dropna()
-        if res.empty:
+        cell = pd.DataFrame({
+            "residual": grp["forecast"] * factor - grp["actual"],
+            "weight": grp["weight"],
+        }).dropna(subset=["residual"])
+        if cell.empty:
             continue
-        out[(str(prop), str(band))] = res.reset_index(drop=True)
+        out[(str(prop), str(band))] = cell.reset_index(drop=True)
     return out
 
 

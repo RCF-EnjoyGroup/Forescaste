@@ -687,6 +687,59 @@ def test_panel_tracking_signal_fila_con_veredicto(tmp_path):
     assert "el MAPE esconde" in html
 
 
+def test_panel_tracking_signal_marca_hoteles_provisionales(tmp_path):
+    """Los cold start llevan ⚠ en la fila TS: su sesgo es documentado."""
+    vintage = {
+        "n_obs": 78,
+        "window": {"start": "2026-10-07", "end": "2026-10-19"},
+        "global": {"wmape": 0.09, "n_obs": 78},
+        "by_property": [
+            {"property": "SJOSL", "n_obs": 13, "tracking_signal": 11.7},
+            {"property": "CORIN", "n_obs": 13, "tracking_signal": -2.1},
+        ],
+    }
+    out = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.13, "mape": 22.0, "bias": -0.03, "n_obs": 540},
+        vintage_tracking=vintage,
+        cold_start={"SJOSL": "286d < 365d de histórico: forecast provisional"},
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "SJOSL⚠ +11.7" in html, "el cold start lleva la marca junto al nombre"
+    assert "CORIN -2.1" in html and "CORIN⚠" not in html, "el estable no lleva marca"
+    assert "cold start provisional" in html, "el criterio explica la marca"
+
+
+def test_panel_benchmark_cita_la_annada_reciente(tmp_path):
+    """Las filas de banda citan la medición real de la añada cuando la cubre."""
+    vintage = {
+        "n_obs": 78,
+        "window": {"start": "2026-10-07", "end": "2026-10-19"},
+        "global": {"wmape": 0.0935, "n_obs": 78},
+        "by_lead_band": [
+            {"lead_band": "1-2", "wmape": 0.094, "mae": 8.0, "n_obs": 12,
+             "bias": 0.08},
+            {"lead_band": "3-6", "wmape": 0.055, "mae": 4.4, "n_obs": 24,
+             "bias": 0.036},
+        ],
+    }
+    out = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.16, "mape": 26.6, "bias": -0.05, "n_obs": 540},
+        lead_band_breakdown=_lead_band_breakdown(),
+        benchmark_bands={"short": [0.07, 0.12], "mid": [0.18, 0.22], "long": [0.25, 0.30]},
+        vintage_tracking=vintage,
+    )
+    html = out.read_text(encoding="utf-8")
+    # el corto agrupa 1-2 y 3-6: añada = (8*12 + 4.4*24) / (96/.094 + 105.6/.055)
+    # = 201.6 / (1021 + 1920) = 6.9% — la medición fresca, citada
+    assert "añada publicada reciente: 6.9%" in html
+    # el medio (7-13, 14-29) no está cubierto por la añada: sin cita extra
+    i_medio = html.find("WMAPE medio (7-29d) vs banda industria")
+    seg_medio = html[i_medio:i_medio + 700]
+    assert "añada publicada reciente" not in seg_medio
+
+
 def test_panel_tracking_signal_en_control(tmp_path):
     vintage = {
         "n_obs": 78,

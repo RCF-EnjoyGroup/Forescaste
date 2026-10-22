@@ -897,6 +897,7 @@ def run_end_to_end(
     operative_bands = operative_residual_bands(
         fold_predictions, model_by_property, blend_by_property, history,
         bias_factors=bias_factors,
+        recency_decay=float((config.monitoring or {}).get("interval_recency_decay", 0.7)),
     )
     residuals_provided = bool(residual_bands) and len(residuals_flat) > 0
     if operative_bands:

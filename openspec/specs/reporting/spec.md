@@ -126,6 +126,7 @@ El reporte HTML SHALL ser legible sin conocimiento previo del motor: cada secci�
 - **THEN** con revisión entre corridas: el delta del forecast sobre estancias comunes aún futuras (|Δ| ≤ 5% estable)
 - **THEN** la precisión se juzga por horizonte — corto (≤6d), medio (7-29d), largo (30d+) — contra bandas de la INDUSTRIA configurables (perfil resort/estacional por defecto), con pooling ponderado por volumen entre las bandas de lead del grupo; el WMAPE de ventana declara que mezcla horizontes
 - **THEN** cada fila declara el criterio con el que se juzga (p. ej. «|sesgo| < 5% calibrado · < 10% visible · > 10% fuerte») y un veredicto visual
+- **THEN** la fila de tracking signal marca a los hoteles cold start (⚠ provisional) y las filas de banda citan la medición de la añada publicada reciente cuando cubre los leads del grupo
 - **WHEN** una métrica no es medible en el modo de corrida (p. ej. cobertura en corrida futura)
 - **THEN** la fila se presenta como N/D con el motivo, nunca se omite silenciosamente
 

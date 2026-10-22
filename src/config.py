@@ -155,6 +155,9 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         "bias_correction": dict(mon_cfg_raw.get("bias_correction") or {}),
         "benchmark_bands": benchmark_bands,
         "tracking_signal_alert": float(mon_cfg_raw.get("tracking_signal_alert", 4.0)),
+        "interval_recency_decay": float(
+            mon_cfg_raw.get("interval_recency_decay", 0.7)
+        ),
     }
 
     return EngineConfig(

@@ -172,6 +172,12 @@ El sistema SHALL generar P10, P50 y P90 (o lower/forecast/upper) siempre que el 
 - **THEN** los desplazamientos de la banda son los cuantiles completos del residuo (−q90, −q10): la banda contiene el 80% nominal de la muestra de calibración por construcción, sesgo incluido
 - **THEN** el sesgo sistemático se corrige en el PUNTO (corrección de bias por propiedad × banda), no ignorándolo en la banda
 
+#### Scenario: Cuantiles ponderados por recencia (opcional)
+- **WHEN** `monitoring.interval_recency_decay < 1.0`
+- **THEN** los residuos de folds recientes dominan los cuantiles de la banda (peso `decay^(edad del fold)`) — la banda sigue al régimen vigente en vez de promediar el año previo; los pools de la escalera preservan los pesos
+- **WHEN** el valor es 1.0 (default, definido por A/B del 22-oct: la recencia no superó al baseline en desviación media de cobertura)
+- **THEN** la ponderación es uniforme (comportamiento clásico)
+
 #### Scenario: Contrato monótono ante sesgo extremo
 - **WHEN** más del 90% de los residuos de una celda comparten signo y la banda honesta quedaría a un lado del punto
 - **THEN** la banda se proyecta al contrato p10 <= p50 <= p90 y la proyección queda documentada

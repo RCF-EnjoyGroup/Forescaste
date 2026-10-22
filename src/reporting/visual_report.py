@@ -275,6 +275,30 @@ def _chip(level: str, text: str) -> str:
     return f'<span class="chip {level}">{text}</span>'
 
 
+def _vintage_grupo(vintage_tracking: dict | None, bandas: tuple[str, ...]) -> str:
+    """Cita la medición MÁS FRESCA del grupo cuando la añada la cubre.
+
+    El veredicto del grupo usa la evaluación de la corrida (en modo futuro,
+    el backtest as-of); la añada publicada reciente es la medición real
+    más reciente de esos leads — el lector merece ver ambas cuando
+    difieren (p. ej. corto eval 10% vs añada real 5.5%).
+    """
+    rows = (vintage_tracking or {}).get("by_lead_band") or []
+    by_band = {str(r.get("lead_band")): r for r in rows if r.get("wmape") is not None}
+    grupales = [by_band[b] for b in bandas if b in by_band]
+    if not grupales:
+        return ""
+    abs_err = sum(float(r["mae"]) * int(r.get("n_obs", 0)) for r in grupales)
+    denom = sum(
+        float(r["mae"]) * int(r.get("n_obs", 0)) / max(float(r["wmape"]), 1e-9)
+        for r in grupales
+    )
+    n = sum(int(r.get("n_obs", 0)) for r in grupales)
+    if denom <= 0 or n < 10:
+        return ""
+    return f" · añada publicada reciente: {abs_err / denom:.1%} (n={n}, real)"
+
+
 def _validation_panel(
     *,
     metrics: dict | None,
@@ -369,7 +393,8 @@ def _validation_panel(
                 f"banda resort: < {ok_hasta:.0%} en banda · "
                 f"{ok_hasta:.0%}-{deteriorado_desde:.0%} ajustar · "
                 f"> {deteriorado_desde:.0%} deteriorado (estándar operativo "
-                "HospitalityOS 2026, perfil estacional)",
+                "HospitalityOS 2026, perfil estacional)"
+                + _vintage_grupo(vintage_tracking, bandas),
                 nivel,
             )
 
@@ -525,6 +550,7 @@ def _validation_panel(
     ts_rows = (vintage_tracking or {}).get("by_property") or []
     ts_rows = [r for r in ts_rows if r.get("tracking_signal") is not None]
     if ts_rows:
+        provisional = {str(p) for p in (cold_start or {})}
         peor = ts_rows[0]
         fuera = [r for r in ts_rows if abs(float(r["tracking_signal"])) > 2 * ts_threshold]
         sesgo = [
@@ -532,7 +558,9 @@ def _validation_panel(
             if ts_threshold < abs(float(r["tracking_signal"])) <= 2 * ts_threshold
         ]
         detalle = " · ".join(
-            f"{r['property']} {float(r['tracking_signal']):+.1f}" for r in ts_rows
+            f"{r['property']}{'⚠' if r['property'] in provisional else ''} "
+            f"{float(r['tracking_signal']):+.1f}"
+            for r in ts_rows
         )
         if fuera:
             nivel = _chip("bad", "Fuera de control")
@@ -540,13 +568,18 @@ def _validation_panel(
             nivel = _chip("warn", "Sesgo acumulado")
         else:
             nivel = _chip("ok", "En control")
+        nota_prov = (
+            " · ⚠ = cold start provisional (sesgo documentado hasta acumular histórico)"
+            if provisional & {r["property"] for r in ts_rows}
+            else ""
+        )
         _row(
             "Tracking signal por propiedad (añada)",
             f"{float(peor['tracking_signal']):+.1f} ({peor['property']}, la peor)",
             f"|TS| ≤ {ts_threshold:.0f} en control — error con signo acumulado ÷ "
             "desviación media por hotel; crece cuando una propiedad yerra "
             f"consistente en UNA dirección (el patrón que el MAPE esconde). "
-            f"{detalle}",
+            f"{detalle}{nota_prov}",
             nivel,
         )
 
