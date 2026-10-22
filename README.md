@@ -54,7 +54,11 @@ folds trimestrales por propiedad, sin solape con la ventana de reporte)
 **opera el forecast** — global y por propiedad cuando la evidencia lo
 justifica — y el backtest T-90…T-1 muestreado alimenta los residuos por
 banda de lead de P10/P50/P90 y el entregable `backtesting_report.json`.
-Sale con código `0` solo si los 5 criterios de aceptación pasan.
+Salida con código `0` solo si los 5 criterios de aceptación pasan. Cada corrida
+deja además un registro en `outputs/monitoring/run_registry.json` (estado
+entre corridas: la siguiente compara sus métricas contra estas, retiene o
+reemplaza al campeón por propiedad con histéresis y puntúa el forecast
+publicado contra los reales que se materialicen).
 
 ### 2. Corrida futura (pronóstico operativo)
 
@@ -105,36 +109,74 @@ outputs/runs/futuro-20261009-2027/
 │   ├── forecast.csv · accuracy.csv · pickup.csv · model.csv
 ├── technical_documentation.md
 ├── run_manifest.json                # ← semilla, períodos, fingerprint (reproducible)
-└── report.html                      # ← vista de revisión con gráficos embebidos
+├── vintage_tracking_detail.csv      # ← forecast publicado vs real, estancia por estancia
+│                                      (aparece cuando hay reales materializados del
+│                                       pronóstico de la corrida anterior)
+└── report.html                      # ← vista de revisión auto-explicada con gráficos
 ```
 
-### `report.html` — vista de revisión con gráficos
+### `report.html` — vista de revisión auto-explicada
 
 Además de los 10 entregables, cada corrida genera un **reporte HTML
 autocontenido** (`report.html`, se abre en el navegador sin instalar nada ni
-conexión) con las gráficas de revisión embebidas en base64:
+conexión) con las gráficas de revisión embebidas en base64. Es
+**auto-explicado**: cualquier lector —técnico o de negocio— entiende qué
+significa cada sección y si las métricas están bien.
+
+**Identidad visual (nivel producción):** membrete de corrida con monograma y
+banda de metadatos (corrida, modo, ventana, campeón, generado), KPIs con
+números serif editoriales y dígitos tabulares, secciones agrupadas por orden
+de lectura (Resumen ejecutivo → Precisión → Pronóstico → Contexto), gráficos
+con estilo unificado de la casa (paleta petróleo/terracota, sin adorno) y
+lámparas de veredicto — imprimible y presentable.
+
+**Guía de lectura embebida:**
+- **Interpretación y validación** (primera tarjeta): tabla de veredictos por
+  métrica — WMAPE, bias, cobertura de banda (vs 80% nominal), convergencia
+  del error, significancia del campeón (DM), cold start, drift YoY y estado
+  del registro — cada una con su **criterio explícito** ("< 15% bien · 15-25%
+  revisar · > 25% deteriorado") y su veredicto ✅/🟡/❌. Además, cuando el
+  registro lo permite: **forecast publicado vs reales (vintage)** — el
+  pronóstico de la corrida anterior puntuado contra los reales ya
+  materializados, con la cobertura de la banda que se publicó — y
+  **revisión entre corridas** (delta del forecast sobre estancias comunes
+  aún futuras)
+- **Glosario rápido** (última tarjeta): WMAPE, MAPE, bias, lead days, P10/P50/P90, fold
+- Cada sección lleva su **guía plegable** «¿Cómo leer esta sección?» — qué
+  muestra, cómo interpretarla y qué decisión alimenta
+
+**Secciones (todas defensivas ante datos ausentes):**
 
 - **Forecast** · serie diaria del portafolio con banda P10/P50/P90
-- **Forecast vs Real** · superposición (solo en corridas de verificación, donde hay reales)
+- **Forecast vs Real** · superposición y dispersión (solo en corridas de
+  verificación, donde hay reales)
 - **Forecast por propiedad** · small multiples por hotel: P50, banda P10/P90,
   techo de capacidad, reales y el modelo que opera cada propiedad
 - **Benchmark** · WMAPE por modelo, campeón destacado
 - **Pickup** · RN ya reservados por banda de anticipación
 - **Ocupación** · forecast contra el techo de capacidad
-- **Accuracy por propiedad** · barras de WMAPE + tabla con modelo, MAPE, bias y n
+- **Accuracy por propiedad** · barras de WMAPE + tabla con modelo, MAPE, bias,
+  **cobertura de banda por propiedad** (verde/ámbar/rojo vs 80% nominal) y
+  bandera ⚠ provisional para propiedades cold start
 - **Revisiones T-90..T-1** · WMAPE del backtest por propiedad y convergencia del
   error por banda de lead (una línea por hotel)
 - **EDA** · volumen diario de room nights
 
 Es una **vista**: la lógica vive en `src/` (`reporting/visual_report.py`) y el
 reporte solo importa y presenta (spec reporting: los notebooks/reportes no
-llevan lógica). No cuenta entre los 10 entregables y nunca rompe la corrida si
-faltan datos — las secciones ausentes se omiten con un mensaje. Los KPIs
-ejecutivos aparecen como tarjetas arriba.
+llevan lógica). Los veredictos son ayuda de lectura — los gates duros viven
+en los criterios de aceptación del runner y el gate de calidad de datos. No
+cuenta entre los 10 entregables y nunca rompe la corrida si faltan datos —
+las secciones ausentes se omiten con un mensaje. Los KPIs ejecutivos
+aparecen como tarjetas arriba.
 
 ```bash
 # abrir el último reporte (Windows)
 start outputs/runs/futuro-20261010-0754/report.html
+
+# regenerar el reporte de una corrida SIN re-correr el pipeline (p. ej.
+# tras mejorar la presentación): reconstruye la vista desde los entregables
+python scripts/regen_report.py outputs/runs/real-20261020-0746
 ```
 
 ---
@@ -152,9 +194,9 @@ src/
 ├── evaluation/          # métricas, ventanas, desgloses, selección de campeón, multi-paso
 ├── forecasting/         # runner end-to-end, restricciones, CLI run_real.py
 ├── explainability/      # importancia de features + SHAP
-├── monitoring/          # drift, outliers, decisión de re-entrenamiento, manifiesto
+├── monitoring/          # drift YoY, outliers, re-entrenamiento, registro entre corridas, tracking vintage, manifiesto
 └── reporting/           # benchmark, tabla de forecast, KPIs, dataset Power BI, entregables
-tests/                   # 348 tests
+tests/                   # 399 tests
 openspec/                # specs, propuestas y changelog del proyecto
 ```
 
@@ -211,9 +253,41 @@ openspec/                # specs, propuestas y changelog del proyecto
   global: con 4 folds las diferencias pequeñas son ruido y sin margen el
   modelo por propiedad oscilaba entre corridas.
 - **Cobertura empírica de la banda**: el accuracy report publica la
-  cobertura de P10–P90 contra reales (global, por propiedad y por banda de
-  lead) cuando la ventana evaluada tiene reales — una banda honesta contiene
-  el 80% nominal; el desglose expone las celdas mal calibradas.
+  cobertura de P10–P90 contra reales (global, por propiedad, por banda de
+  lead y la matriz propiedad × banda) cuando la ventana evaluada tiene
+  reales — una banda honesta contiene el 80% nominal; el desglose expone
+  las celdas mal calibradas y el monitoreo alerta desviaciones > 7.5pp.
+- **Banda conformal + corrección de bias**: la banda usa los cuantiles
+  COMPLETOS del residuo del forecast operativo (−q90, −q10): contiene el
+  80% nominal de la muestra de calibración por construcción, sesgo
+  incluido (la banda de-mediaada perdía la masa del sesgo: CORIN 67%,
+  FIESTA 68% vs 80% nominal). El sesgo sistemático se corrige en el
+  PUNTO por (propiedad × banda) con evidencia de folds, shrinkage por
+  tamaño de muestra y clip ±30% — el backtest documentaba
+  sobre-pronóstico de +23%/+30% a leads 60–90+. El factor viaja en el
+  dataset publicado (`bias_correction_factor`).
+- **Monitoreo con estado (registro entre corridas)**: `outputs/monitoring/
+  run_registry.json` persiste métricas, campeón y cobertura de cada
+  corrida (append-only, atómico, jamás rompe) y habilita: drift de
+  métricas contra la corrida anterior (10.1 real), re-entrenamiento con
+  días/registros-nuevos reales (10.4), histéresis del campeón por
+  propiedad (el incumbente se retiene salvo ventaja material — los
+  empates DM son ruido, no evidencia) y tracking vintage.
+- **Drift de demanda accionable**: por propiedad contra la misma ventana
+  calendario un año atrás (YoY, PSI con 5 bins y suavizado de conteos,
+  umbrales calibrados para n=90) — la referencia "primera mitad del
+  histórico" disparaba 22σ en cada corrida por el crecimiento del
+  portafolio. Propiedades con < 365d quedan documentadas como no
+  evaluables. Outliers con baseline rodante local (el arranque de una
+  propiedad nueva no es "evento").
+- **Tracking vintage + revisión entre corridas**: el forecast publicado
+  por la corrida anterior se puntúa contra los reales materializados
+  (por vintage y banda de lead, con su cobertura de banda) y la revisión
+  entre corridas (delta sobre estancias comunes) se publica en los KPIs
+  (`forecast_vs_previous`).
+- **Cold start declarado**: propiedades con < 365d de histórico se
+  publican como **provisionales** (manifiesto `cold_start_properties` y
+  documentación técnica); el forecast no las oculta, las etiqueta.
 - **Baseline exigente**: `seasonal_naive` usa la media de las últimas 4
   ocurrencias del mismo día de semana (no una sola observación) — el
   benchmark solo es creíble si ganarle al baseline cuesta algo.
@@ -224,7 +298,7 @@ openspec/                # specs, propuestas y changelog del proyecto
 ## Tests
 
 ```bash
-python -m pytest -q          # 348 tests
+python -m pytest -q          # 399 tests
 ```
 
 Cobren la cadena completa (e2e), esquema alternativo, as-of/leakage,
@@ -237,7 +311,15 @@ evaluación. La revisión externa de data science (2026-10-15) sumó blindajes:
 el backtest del modo futuro opera el campeón seleccionado as-of (no un modelo
 sustituto), el margen de materialidad del override por propiedad, los bordes
 de bins densos a leads cortos, la media de K ocurrencias en el baseline y la
-cobertura empírica de la banda.
+cobertura empírica de la banda. La revisión de producción (2026-10-19) sumó:
+banda conformal (cuantiles completos del residuo — cobertura nominal por
+construcción), corrección de bias del punto por (propiedad × banda) con
+shrinkage, registro de estado entre corridas (drift de métricas y
+re-entrenamiento con memoria, histéresis del campeón), drift YoY por
+propiedad con PSI calibrado, outliers con baseline local, tracking vintage
+del forecast publicado y cold start provisional declarado
+(`tests/test_bias_correction.py`, `tests/test_run_registry.py`,
+`tests/test_accuracy_tracking.py`).
 
 ---
 

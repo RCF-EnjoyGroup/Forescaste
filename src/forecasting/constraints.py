@@ -314,12 +314,24 @@ def build_intervals(
     )
 
     def _shifts(res: pd.Series) -> tuple[float, float]:
-        """Cuantiles de-mediaos: (q10 - q50, q90 - q50) — spread puro."""
+        """Cuantiles COMPLETOS del residuo: (−q90, −q10) — calibración conformal.
+
+        La banda describe la distribución TOTAL del error del punto
+        publicado (sesgo incluido). El enfoque anterior de-mediaaba
+        (q10−q50, q90−q50) bajo el supuesto «el sesgo del campeón ya vive
+        en el punto» — supuesto falsado por la cobertura empírica: en
+        celdas con bias de fold ≠ 0 (CORIN 67%, FIESTA 68% vs 80%
+        nominal) la banda anclada al punto perdía la masa desplazada por
+        el sesgo. Con cuantiles completos la banda contiene el 80% de los
+        residuos de calibración POR CONSTRUCCIÓN; el sesgo sistemático se
+        corrige en el PUNTO (``lead_bias_factors``) y la asimetría
+        restante la absorbe la banda.
+        """
         vals = pd.Series(res).dropna().to_numpy(dtype=float)
         if len(vals) == 0:
             return 0.0, 0.0
         qs = np.quantile(vals, list(levels))
-        return float(qs[0] - qs[1]), float(qs[2] - qs[1])
+        return float(-qs[2]), float(-qs[0])
 
     global_shift = _shifts(residuals) if residuals is not None else None
 
@@ -420,6 +432,21 @@ def build_intervals(
         lo, hi = global_shift
         p10 = p10 + lo
         p90 = p90 + hi
+
+    # contrato de orden p10 <= p50 <= p90: una celda con error de fold tan
+    # sesgado que >90% de los residuos comparten signo produce una banda
+    # honesta completamente a un lado del punto; el contrato publicado es
+    # monótono (los consumidores asumen p50 dentro de la banda), así que
+    # se proyecta y se documenta
+    below = int(np.sum(p10 > p50))
+    above = int(np.sum(p90 < p50))
+    if below or above:
+        notes.append(
+            f"banda proyectada al contrato p10<=p50<=p90 en {below + above} "
+            "registros (celda con sesgo extremo: revisar corrección de bias)"
+        )
+    p10 = np.minimum(p10, p50)
+    p90 = np.maximum(p90, p50)
 
     if cap is not None:
         cap_vals = cap.to_numpy(dtype=float)

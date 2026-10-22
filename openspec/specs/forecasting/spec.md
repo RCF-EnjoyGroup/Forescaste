@@ -167,6 +167,25 @@ El sistema SHALL generar P10, P50 y P90 (o lower/forecast/upper) siempre que el 
 - **WHEN** se publican bandas
 - **THEN** el origen de los residuos usados se reporta de forma veraz (residuos del forecast operativo en folds, revisiones del backtest o fuente sintética etiquetada como tal)
 
+#### Scenario: Calibración conformal (cuantiles completos)
+- **WHEN** los residuos de una celda tienen sesgo o asimetría (mediana ≠ 0)
+- **THEN** los desplazamientos de la banda son los cuantiles completos del residuo (−q90, −q10): la banda contiene el 80% nominal de la muestra de calibración por construcción, sesgo incluido
+- **THEN** el sesgo sistemático se corrige en el PUNTO (corrección de bias por propiedad × banda), no ignorándolo en la banda
+
+#### Scenario: Contrato monótono ante sesgo extremo
+- **WHEN** más del 90% de los residuos de una celda comparten signo y la banda honesta quedaría a un lado del punto
+- **THEN** la banda se proyecta al contrato p10 <= p50 <= p90 y la proyección queda documentada
+
+#### Scenario: Corrección de bias del punto por (propiedad, banda)
+- **WHEN** los folds del forecast operativo documentan sesgo sistemático en una celda (p. ej. sobre-pronóstico a leads 60-90)
+- **THEN** el punto publicado se corrige multiplicativamente con shrinkage por tamaño de muestra y clip documentado, ANTES del piso de reservas y el techo de capacidad
+- **THEN** celdas con menos observaciones que el mínimo y correcciones inmateriales no se tocan
+- **THEN** el factor aplicado viaja en el dataset publicado (`bias_correction_factor`) y el detalle por celda en el manifiesto
+
+#### Scenario: Cobertura de banda monitoreada
+- **WHEN** la cobertura empírica de una propiedad se desvía más de 7.5 puntos del nominal con n suficiente
+- **THEN** el monitoreo emite una alerta de banda mal calibrada por propiedad
+
 #### Scenario: Modelo sin intervalos nativos
 - **WHEN** un candidato no puede producir percentiles
 - **THEN** el sistema lo indica en la salida y documenta el método alternativo usado o la ausencia de intervalos

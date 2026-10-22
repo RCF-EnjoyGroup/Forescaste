@@ -56,16 +56,58 @@ def _with_lead_band(df: pd.DataFrame) -> pd.DataFrame:
     except (TypeError, ValueError):
         return df
 
-# paleta fija (accesible en fondos claros)
+# paleta del sistema de diseño del reporte (papel frío + petróleo + semánticos)
+# coherente entre HTML y matplotlib: los gráficos y la página hablan el mismo idioma
 _COLORS = {
-    "forecast": "#2563eb",
-    "actual": "#dc2626",
-    "band": "#93c5fd",
-    "capacity": "#64748b",
-    "champ": "#16a34a",
-    "other": "#cbd5e1",
-    "primary": "#1e293b",
+    "ink":      "#0B2239",  # tinta océano (títulos, texto fuerte)
+    "primary":  "#0E7490",  # petróleo (líneas de forecast, acento del sistema)
+    "forecast": "#0E7490",  # alias semántico: serie pronosticada
+    "actual":   "#C2410C",  # terracota profundo (reales — cálido contra el frío)
+    "band":     "#A8D8E8",  # banda P10-P90 (petróleo claro)
+    "capacity": "#94A3B8",  # techo de capacidad (slate)
+    "champ":    "#15803D",  # verde campeón
+    "other":    "#D5DEE7",  # barras no-campeón (slate claro)
+    "accent2":  "#B45309",  # ámbar (categoría secundaria)
+    "accent3":  "#6D28D9",  # ciruela (categoría terciaria)
+    "grid":     "#E2E8F0",
+    "text":     "#334155",
+    "muted":    "#64748B",
 }
+
+
+def _apply_chart_style() -> None:
+    """Sistema visual de los gráficos — coherente con el diseño de la página.
+
+    Reglas de la casa (se aplican a TODAS las gráficas del reporte): fondo
+    blanco, spines superior/derecho fuera, sutil grilla horizontal, títulos
+    alineados a la izquierda en tinta océano y tipografía 9pt — el lector
+    debe leer el gráfico, no el adorno.
+    """
+    matplotlib.rcParams.update({
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+        "axes.edgecolor": "#CBD5E1",
+        "axes.linewidth": 0.8,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "axes.axisbelow": True,
+        "grid.color": _COLORS["grid"],
+        "grid.linewidth": 0.8,
+        "xtick.color": "#475569",
+        "ytick.color": "#475569",
+        "xtick.labelsize": 8.5,
+        "ytick.labelsize": 8.5,
+        "text.color": _COLORS["text"],
+        "axes.labelcolor": "#475569",
+        "axes.labelsize": 9,
+        "font.size": 9,
+        "axes.titlesize": 10.5,
+        "axes.titleweight": 600,
+        "axes.titlecolor": _COLORS["ink"],
+        "axes.titlelocation": "left",
+        "figure.dpi": 110,
+    })
 
 
 def _fig_to_base64(fig: plt.Figure) -> str:
@@ -74,6 +116,415 @@ def _fig_to_base64(fig: plt.Figure) -> str:
     fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+# ------------------------------------------------------------------
+# guías de lectura por sección (texto de presentación, no lógica)
+# ------------------------------------------------------------------
+
+_EXPLAINERS: dict[str, str] = {
+    "Forecast": (
+        "<b>Qué ves:</b> el pronóstico diario total del portafolio (P50 = mediana) "
+        "con la banda de incertidumbre P10–P90 sombreada. <b>Cómo leerla:</b> hay "
+        "80% de probabilidad de que el real caiga dentro del área sombreada (10% "
+        "por debajo de P10, 10% por encima de P90). Banda angosta = confianza "
+        "(típico a leads cortos, cuando ya hay reservas en libros); banda ancha = "
+        "incertidumbre real. El zigzag semanal (picos fin de semana) debe "
+        "aparecer: una línea plana sería mala señal."
+    ),
+    "Forecast vs Real": (
+        "<b>Qué ves:</b> pronóstico y reales superpuestos (solo en corridas de "
+        "verificación, donde la ventana ya tiene reales). <b>Cómo leerla:</b> "
+        "cuanto más pegadas caminen las líneas, mejor. Un tramo donde una queda "
+        "sistemáticamente arriba/abajo no es ruido: es sesgo visible a simple "
+        "vista (se cuantifica en el KPI Bias). Reales saliéndose de la banda con "
+        "frecuencia = banda mal calibrada (ver panel de validación)."
+    ),
+    "Forecast por propiedad": (
+        "<b>Qué ves:</b> una mini-gráfica por hotel con el P50 (línea), la banda "
+        "P10–P90 (sombra), el techo de capacidad y el modelo que opera ese hotel "
+        "en el título. <b>Por qué importa:</b> el total del portafolio esconde "
+        "todo — aquí se ve que cada hotel tiene su propia escala de error (la "
+        "banda se calibra por propiedad, no con el promedio). <b>Qué mirar:</b> "
+        "si el P50 toca el techo de capacidad en fechas específicas, el hotel se "
+        "pronostica lleno (señal de pricing)."
+    ),
+    "Benchmark": (
+        "<b>Qué ves:</b> el bake-off de los 7 candidatos: WMAPE por modelo en 4 "
+        "ventanas trimestrales del año previo al corte, evaluadas sin ver el "
+        "futuro (sin fugas). Menor = mejor; el campeón va destacado. <b>Cómo "
+        "leerla:</b> si el subcampeón está cerca, la prueba Diebold-Mariano "
+        "decide: un empate estadístico se desempata por parsimonia (el más "
+        "simple opera); una ventaja significativa cambia el campeón. El veredicto "
+        "exacto está en el panel de validación."
+    ),
+    "Pickup": (
+        "<b>Qué ves:</b> room nights ya reservados según los días que faltan "
+        "para la estancia. <b>Cómo leerla:</b> la curva típica es cóncava — se "
+        "acumula rápido al cierre. Es el corazón del modelo campeón: a lo ya "
+        "reservado le suma lo que históricamente se recoge a esa anticipación. "
+        "A leads largos (30+) hay poco reservado: por eso el pronóstico a 60–90 "
+        "días depende de la señal estacional y carga con más incertidumbre."
+    ),
+    "Ocupación": (
+        "<b>Qué ves:</b> el pronóstico traducido a porcentaje del inventario "
+        "disponible. <b>Guía rápida:</b> sostenido > 80% = temporada alta "
+        "(presión de precios); < 40% = temporada baja (descuentos y marketing "
+        "importan). Es la vista en el lenguaje del negocio."
+    ),
+    "EDA": (
+        "<b>Qué ves:</b> el histórico real de demanda — el mundo sobre el que "
+        "todo lo demás se entrena y evalúa. <b>Qué mirar:</b> estacionalidad "
+        "anual, el efecto COVID (2020–21) y el crecimiento del portafolio "
+        "(más hoteles abriendo = saltos de nivel). Por eso el drift se compara "
+        "año contra año, no contra el histórico completo."
+    ),
+    "Dispersión": (
+        "<b>Qué ves:</b> cada punto es un día-hotel: eje X = real, eje Y = "
+        "pronosticado. <b>Cómo leerla:</b> puntos sobre la diagonal = "
+        "pronóstico perfecto; nube pegada a la diagonal = buen modelo. Si la "
+        "nube queda sistemáticamente debajo de la diagonal en la derecha (días "
+        "grandes), el modelo sub-estima la demanda alta — el patrón del Bias "
+        "negativo."
+    ),
+    "Accuracy por propiedad": (
+        "<b>Qué ves:</b> barras de WMAPE por hotel (verde < 15%, azul < 30%) y "
+        "la tabla exacta con el modelo que opera, el WMAPE semanal y el bias. "
+        "<b>Por qué el semanal:</b> en hoteles pequeños el error diario es ruido "
+        "de denominador (±3 RN con reales de 5 ya son 60%); agregado semanal, "
+        "el patrón se ve limpio — <b>para decisiones de negocio, el semanal es "
+        "la vista honesta</b>. La columna de cobertura dice si la banda de ese "
+        "hotel contiene el 80% nominal de los reales."
+    ),
+    "Revisiones T-90..T-1 · por propiedad": (
+        "<b>Qué ves:</b> el backtest operativo: fechas de estancia pasadas "
+        "pronosticadas como si faltaran 90, 60, 30, 14, 7, 3 y 1 días, con el "
+        "campeón operando cada revisión. <b>Cómo leer la convergencia:</b> es "
+        "la física del problema — a 90 días hay poca información (error alto), "
+        "al cierre casi todo está reservado (error mínimo). Una línea que no "
+        "converge indica un problema en ese hotel. <b>La pregunta de negocio "
+        "que responde:</b> ¿con cuánta anticipación puedo confiar en el "
+        "pronóstico? Usa el WMAPE de la banda de lead de tu horizonte de "
+        "decisión (p. ej. 14-29 para pricing con 2 semanas de margen), no el "
+        "global."
+    ),
+}
+
+
+def _explainer(name: str) -> str:
+    """Bloque plegable con la guía de lectura de la sección (si existe)."""
+    text = _EXPLAINERS.get(name)
+    if not text:
+        return ""
+    return (
+        f'<details class="expl"><summary>¿Cómo leer esta sección?</summary>'
+        f'<p>{text}</p></details>'
+    )
+
+
+# ------------------------------------------------------------------
+# glosario + panel de interpretación y validación
+# ------------------------------------------------------------------
+
+
+def _glossary_card() -> str:
+    terms = [
+        ("WMAPE", "Error ponderado por volumen: de cada 100 RN reales, cuántos "
+                  "se equivocó el pronóstico. La métrica principal (pesa más "
+                  "los días y hoteles grandes)."),
+        ("MAPE", "Error porcentual por día promediado simple (cada día vale "
+                 "igual). Siempre mayor que el WMAPE; no compara contra el "
+                 "de otras ventanas."),
+        ("Bias", "Sesgo sistemático: negativo = tiende a sub-estimar; "
+                 "positivo = sobre-estimar. Lo ideal, cerca de 0."),
+        ("Lead days", "Días que faltan para la estancia. T-90..T-1 = el mismo "
+                      "día pronosticado cuando faltaban 90, 60, 30… y 1 días."),
+        ("P10/P50/P90", "Percentiles del pronóstico: la banda contiene el real "
+                        "el 80% de las veces si está bien calibrada. P50 es el "
+                        "valor central publicado."),
+        ("Fold", "Ventana de evaluación del benchmark (trimestral, del año "
+                 "previo al corte, sin solapar la ventana reportada)."),
+        ("Vintage / forecast_date", "La fecha «as-of» con la que se PUBLICÓ un "
+                                    "forecast (el corte de esa corrida). El "
+                                    "tracking vintage puntuía el forecast tal "
+                                    "como se publicó ese día, sin ventaja "
+                                    "retrospectiva: por eso en el detalle "
+                                    "`vintage_tracking_detail.csv` la columna no "
+                                    "cambia entre filas — todo el archivo evalúa "
+                                    "UNA publicación; cambia en el siguiente "
+                                    "ciclo cuando se puntúa la corrida más "
+                                    "recente."),
+    ]
+    rows = "".join(
+        f"<tr><td><b>{k}</b></td><td>{v}</td></tr>" for k, v in terms
+    )
+    return (
+        '<section class="card wide glossary"><h2>Glosario rápido</h2>'
+        '<table class="tbl"><thead><tr><th style="width:110px">Término</th>'
+        "<th>Significado</th></tr></thead><tbody>" + rows + "</tbody></table>"
+        "</section>"
+    )
+
+
+def _chip(level: str, text: str) -> str:
+    """Lámpara de veredicto: ok (verde) / warn (ámbar) / bad (rojo) / info (gris).
+
+    El punto de color codifica la severidad; el texto queda plano y
+    profesional (sin emojis — este reporte se imprime y se presenta).
+    """
+    return f'<span class="chip {level}">{text}</span>'
+
+
+def _validation_panel(
+    *,
+    metrics: dict | None,
+    benchmark: pd.DataFrame | None,
+    champion: str | None,
+    significance: dict | None,
+    interval_coverage: dict | None,
+    backtest_report: dict | None,
+    cold_start: dict[str, str] | None,
+    drift_alerts: list | None,
+    monitoring_state: dict | None,
+    bias_correction: dict | None,
+    vintage_tracking: dict | None = None,
+    forecast_revision: dict | None = None,
+) -> str:
+    """Tabla de veredictos: métrica | valor | criterio | lectura.
+
+    Umbrales INTERPRETATIVOS de presentación (ayudan a leer el reporte); los
+    gates duros de la corrida viven en los criterios de aceptación del
+    runner y en el gate de calidad de datos.
+    """
+    rows: list[str] = []
+
+    def _row(name: str, value: str, criterio: str, chip: str) -> None:
+        rows.append(
+            f"<tr><td>{name}</td><td><b>{value}</b></td>"
+            f"<td>{criterio}</td><td>{chip}</td></tr>"
+        )
+
+    # --- WMAPE de la ventana (con contexto del benchmark anual)
+    if metrics and "wmape" in metrics:
+        w = float(metrics["wmape"])
+        nivel = _chip("ok", "Bien") if w < 0.15 else (
+            _chip("warn", "Revisar") if w < 0.25 else _chip("bad", "Deteriorado")
+        )
+        folds_note = ""
+        if benchmark is not None and not benchmark.empty and champion:
+            champ = benchmark.loc[benchmark["model"] == champion]
+            if not champ.empty and "wmape" in champ.columns:
+                folds_w = float(champ["wmape"].mean())
+                folds_note = (
+                    f" · expectativa anual del campeón (folds): {folds_w:.1%}"
+                )
+        _row(
+            "WMAPE (ventana)", f"{w:.1%}",
+            "< 15% bien · 15–25% revisar · > 25% deteriorado"
+            + folds_note,
+            nivel,
+        )
+
+    # --- Bias
+    if metrics and "bias" in metrics:
+        b = float(metrics["bias"])
+        nivel = _chip("ok", "Calibrado") if abs(b) < 0.05 else (
+            _chip("warn", "Sesgo visible") if abs(b) < 0.10
+            else _chip("bad", "Sesgo fuerte")
+        )
+        _row(
+            "Bias", f"{b:+.1%}",
+            "|sesgo| < 5% calibrado · < 10% visible · > 10% fuerte "
+            "(negativo = sub-estima)",
+            nivel,
+        )
+
+    # --- Cobertura de banda
+    if interval_coverage and (interval_coverage.get("global") or {}).get("n_obs"):
+        g = interval_coverage["global"]
+        cov = float(g["coverage"])
+        nominal = float(g.get("nominal", 0.80))
+        desv = abs(cov - nominal)
+        nivel = _chip("ok", "Calibrada") if desv <= 0.05 else (
+            _chip("warn", "Ajustar") if desv <= 0.10 else _chip("bad", "Descalibrada")
+        )
+        peor = ""
+        by_prop = interval_coverage.get("by_property") or []
+        fuera = [
+            r for r in by_prop
+            if int(r.get("n_obs", 0)) >= 30
+            and abs(float(r.get("coverage", nominal)) - nominal) > 0.05
+        ]
+        if fuera:
+            peor = "; ".join(
+                f"{r['property']} {float(r['coverage']):.0%}"
+                for r in sorted(fuera, key=lambda r: abs(r["coverage"] - nominal),
+                                reverse=True)
+            )
+            peor = f" · fuera de ±5pp: {peor}"
+        _row(
+            "Cobertura banda P10–P90", f"{cov:.1%}",
+            f"debe contener el {nominal:.0%} nominal de los reales (±5pp "
+            f"calibrada, ±10pp ajustar){peor}",
+            nivel,
+        )
+    elif interval_coverage and interval_coverage.get("note"):
+        _row(
+            "Cobertura banda P10–P90", "—",
+            "no medible en corrida futura (la banda vive sobre el horizonte, "
+            "que aún no tiene reales); la cobertura por vintage se mide al "
+            "materializarse los reales",
+            _chip("info", "N/D"),
+        )
+
+    # --- Convergencia del backtest (lead 1-2 vs 60-89)
+    if backtest_report:
+        bands = {r["lead_band"]: r for r in backtest_report.get("by_lead_band") or []}
+        short = bands.get("1-2")
+        long_ = bands.get("60-89")
+        if short and long_:
+            ratio = float(long_["wmape"]) / max(float(short["wmape"]), 1e-9)
+            nivel = _chip("ok", "Converge") if ratio >= 1.5 else (
+                _chip("warn", "Convergencia débil") if ratio >= 1.1
+                else _chip("bad", "No converge")
+            )
+            _row(
+                "Convergencia del error",
+                f"{float(short['wmape']):.1%} (lead 1-2) vs "
+                f"{float(long_['wmape']):.1%} (60-89)",
+                "el error al cierre debe ser mucho menor que a 90 días "
+                f"(razón {ratio:.1f}×)",
+                nivel,
+            )
+
+    # --- Significancia del campeón
+    if significance:
+        pv = significance.get("pvalue")
+        rival = significance.get("runner_up", "?")
+        if pv is not None:
+            if significance.get("significant"):
+                nivel = _chip("ok", "Ventaja significativa")
+                crit = f"DM p={float(pv):.3f} < 0.05 vs '{rival}'"
+            else:
+                nivel = _chip("info", "Empate → parsimonia")
+                crit = (
+                    f"DM p={float(pv):.3f} ≥ 0.05 vs '{rival}': estadísticamente "
+                    "indistinguibles, opera el más simple"
+                )
+            _row("Significancia del campeón", champion or "—", crit, nivel)
+
+    # --- Cold start
+    if cold_start:
+        props = ", ".join(f"{p} ({v.split(':')[0]})" for p, v in sorted(cold_start.items()))
+        _row(
+            "Cold start (provisional)", props,
+            "propiedades con < 365d de histórico: su forecast es provisional "
+            "y no debe usarse para planeación sin esa salvedad",
+            _chip("warn", "Provisional"),
+        )
+
+    # --- Drift YoY
+    if drift_alerts is not None:
+        demanda = [a for a in drift_alerts if str(a.get("metric", "")).startswith("demand_psi")]
+        nivel = _chip("ok", "Sin drift") if not demanda else _chip(
+            "warn", f"{len(demanda)} hallazgo(s) YoY"
+        )
+        detalle = (
+            "; ".join(str(a.get("message", "")) for a in demanda[:3])
+            if demanda
+            else "ninguna propiedad cambió de nivel vs el año pasado"
+        )
+        _row(
+            "Drift de demanda (YoY)", f"{len(demanda)} alerta(s)",
+            "por propiedad contra la misma ventana un año atrás (PSI) — sin "
+            "fatiga de alertas. " + detalle,
+            nivel,
+        )
+
+    # --- Vintage: el forecast publicado contra los reales que llegaron
+    if vintage_tracking and vintage_tracking.get("global"):
+        vt = vintage_tracking
+        w = float(vt["global"].get("wmape", float("nan")))
+        n = int(vt.get("n_obs", 0))
+        window = vt.get("window") or {}
+        nivel = (
+            _chip("ok", "Bien") if w < 0.15
+            else (_chip("warn", "Revisar") if w < 0.25 else _chip("bad", "Deteriorado"))
+        )
+        band = (vt.get("interval_coverage") or {}).get("global") or {}
+        extra = (
+            f" · la banda publicada cubrió {float(band.get('coverage', float('nan'))):.0%} "
+            f"(nominal {float(band.get('nominal', 0.8)):.0%})"
+            if band else ""
+        )
+        detalle = (
+            " — detalle por estancia en vintage_tracking_detail.csv"
+            if vt.get("detail_csv") else ""
+        )
+        _row(
+            "Forecast publicado vs reales (vintage)", f"{w:.1%} (n={n})",
+            f"el forecast publicado por la corrida anterior, puntuado contra los "
+            f"reales ya materializados ({window.get('start', '—')} → "
+            f"{window.get('end', '—')}); WMAPE < 15% bien · 15–25% revisar{extra}{detalle}",
+            nivel,
+        )
+
+    # --- Revisión entre corridas
+    if forecast_revision:
+        d = float(forecast_revision.get("delta_pct", 0.0))
+        nivel = (
+            _chip("ok", "Estable") if abs(d) <= 0.05
+            else (_chip("warn", "Movimiento notable") if abs(d) <= 0.15
+                  else _chip("bad", "Cambio fuerte"))
+        )
+        _row(
+            "Revisión entre corridas", f"{d:+.1%}",
+            f"delta del forecast actual vs el publicado por la corrida anterior "
+            f"sobre {int(forecast_revision.get('n_stays', 0))} estancias comunes "
+            "aún futuras; |Δ| ≤ 5% estable · ≤ 15% notable",
+            nivel,
+        )
+
+    # --- Estado entre corridas (registro)
+    if monitoring_state is not None:
+        prev = monitoring_state.get("previous_run_id")
+        nuevos = monitoring_state.get("new_records")
+        if prev:
+            crit = (
+                f"corrida anterior: {prev} · {monitoring_state.get('days_since_last')}d "
+                f"desde el último entrenamiento · {nuevos} registros nuevos"
+            )
+            nivel = _chip("ok", "Memoria activa")
+        else:
+            crit = "primera corrida con registro: la próxima compara contra esta"
+            nivel = _chip("info", "Sin historial")
+        _row("Registro entre corridas", "—", crit, nivel)
+
+    # --- Corrección de bias
+    if bias_correction and bias_correction.get("n_cells"):
+        n_corr = int(bias_correction.get("n_corrected", 0))
+        n_tot = int(bias_correction.get("n_cells", 0))
+        _row(
+            "Corrección de bias (folds)", f"{n_corr}/{n_tot} celdas",
+            "aprendida de los residuos del forecast operativo por "
+            "(propiedad × banda), con gate de consistencia entre folds y "
+            "shrinkage; celdas inestables no se tocan",
+            _chip("info", "Evidencia de folds"),
+        )
+
+    if not rows:
+        return ""
+    return (
+        '<section class="card wide validation"><h2>Interpretación y validación</h2>'
+        '<table class="tbl verdict"><thead><tr><th>Métrica</th><th>Valor</th>'
+        "<th>Criterio / contexto</th><th>Veredicto</th></tr></thead><tbody>"
+        + "".join(rows) + "</tbody></table>"
+        '<p style="font-size:0.78em;color:#64748b;margin:8px 0 0 0">Veredictos '
+        "interpretativos de lectura; los gates duros de la corrida (fugas, "
+        "restricción de capacidad, calidad de datos, coherencia de "
+        "entregables) viven en los criterios de aceptación del manifiesto.</p>"
+        "</section>"
+    )
 
 
 # ------------------------------------------------------------------
@@ -126,7 +577,25 @@ def _chart_pickup(fc: pd.DataFrame) -> str | None:
     return _fig_to_base64(fig)
 
 
-def _chart_benchmark(benchmark: pd.DataFrame | None) -> str | None:
+def _resolve_champion(
+    benchmark: pd.DataFrame, champion: str | None
+) -> str | None:
+    """Campeón a destacar: columna ``is_champion`` de la tabla, o el explícito.
+
+    Doble fuente (columna primero, parámetro como fallback): la vista no
+    debe perder el realce del campeón cuando la tabla viene reconstruida
+    (p. ej. ``scripts/regen_report.py`` desde model_benchmark.md).
+    """
+    if "is_champion" in benchmark.columns:
+        mask = benchmark["is_champion"].astype(bool)
+        if mask.any():
+            return str(benchmark.loc[mask, "model"].iloc[0])
+    return champion
+
+
+def _chart_benchmark(
+    benchmark: pd.DataFrame | None, champion: str | None = None
+) -> str | None:
     """WMAPE por modelo candidato, destacando al campeón."""
     if benchmark is None or benchmark.empty or "wmape" not in benchmark.columns:
         return None
@@ -134,10 +603,8 @@ def _chart_benchmark(benchmark: pd.DataFrame | None) -> str | None:
     b = b.dropna(subset=["wmape"])
     if b.empty:
         return None
-    champion = None
-    if "is_champion" in b.columns and b["is_champion"].astype(bool).any():
-        champion = b.loc[b["is_champion"].astype(bool), "model"].iloc[0]
-    colors = [_COLORS["champ"] if m == champion else _COLORS["other"] for m in b["model"]]
+    champ = _resolve_champion(b, champion)
+    colors = [_COLORS["champ"] if m == champ else _COLORS["other"] for m in b["model"]]
 
     fig, ax = plt.subplots(figsize=(8, 3.4))
     ax.bar(b["model"], b["wmape"], color=colors)
@@ -145,8 +612,8 @@ def _chart_benchmark(benchmark: pd.DataFrame | None) -> str | None:
     ax.set_ylabel("WMAPE")
     ax.tick_params(axis="x", rotation=30)
     ax.grid(alpha=0.25, axis="y")
-    if champion:
-        ax.text(0.99, 0.95, f"campeón: {champion}", transform=ax.transAxes,
+    if champ:
+        ax.text(0.99, 0.95, f"campeón: {champ}", transform=ax.transAxes,
                 ha="right", va="top", fontsize=9, color=_COLORS["champ"])
     return _fig_to_base64(fig)
 
@@ -336,13 +803,20 @@ def _table_accuracy_by_property(
     breakdown: pd.DataFrame | None,
     model_by_property: dict | None,
     weekly_breakdown: pd.DataFrame | None = None,
+    interval_coverage: dict | None = None,
+    cold_start: dict[str, str] | None = None,
 ) -> str:
-    """Tabla propiedad | modelo | WMAPE | WMAPE sem | MAPE | bias | n_obs.
+    """Tabla propiedad | modelo | WMAPE | WMAPE sem | MAPE | bias | cobertura | n.
 
     El MAPE diario lleva "†" cuando el decil inferior de los reales
     evaluados cae por debajo de 10 RN: con reales de pocas noches, ±5 RN
     de error ya son '+125%' — el MAPE diario es ruido de denominador,
     no señal de precisión (la semana mide la operación real).
+
+    Con ``interval_coverage`` se agrega la cobertura empírica de la banda
+    P10–P90 por propiedad (una banda honesta contiene el 80% nominal);
+    con ``cold_start`` se marca ⚠ a las propiedades provisionales
+    (< 365d de histórico).
     """
     if breakdown is None or breakdown.empty:
         return ""
@@ -356,10 +830,16 @@ def _table_accuracy_by_property(
                 str(p): float(w) for p, w in zip(wb["property"], wb["wmape"])
                 if pd.notna(w)
             }
+    cov_by_prop: dict[str, dict] = {}
+    if interval_coverage:
+        for row in interval_coverage.get("by_property") or []:
+            cov_by_prop[str(row.get("property"))] = row
+    cold = {str(p) for p in (cold_start or {})}
     rows = []
     for _, r in b.iterrows():
         prop = str(r.get("property"))
         model = (model_by_property or {}).get(prop, "—")
+        prop_display = prop + ' <span class="flag">⚠ provisional</span>' if prop in cold else prop
         def _f(key: str, fmt: str) -> str:
             try:
                 return format(float(r[key]), fmt)
@@ -378,11 +858,21 @@ def _table_accuracy_by_property(
         w_sem_cell = format(w_sem, ".3f") if w_sem is not None else "—"
         if w_sem is not None:
             weekly_note = True
+        cov_cell = "—"
+        cov_row = cov_by_prop.get(prop)
+        if cov_row and int(cov_row.get("n_obs", 0)) > 0:
+            cov = float(cov_row["coverage"])
+            nominal = float(cov_row.get("nominal", 0.80))
+            sev = "cov-ok" if abs(cov - nominal) <= 0.05 else (
+                "cov-warn" if abs(cov - nominal) <= 0.10 else "cov-bad"
+            )
+            cov_cell = f'<span class="{sev}">{cov:.0%}</span>'
         rows.append(
-            f"<tr><td>{prop}</td><td>{model}</td>"
+            f"<tr><td>{prop_display}</td><td>{model}</td>"
             f"<td>{_f('wmape', '.3f')}</td><td>{w_sem_cell}</td>"
             f"<td>{mape_cell}</td>"
-            f"<td>{_f('bias', '+.3f')}</td><td>{_f('n_obs', ',')}</td></tr>"
+            f"<td>{_f('bias', '+.3f')}</td><td>{cov_cell}</td>"
+            f"<td>{_f('n_obs', ',')}</td></tr>"
         )
     nota = ""
     if weekly_note:
@@ -390,12 +880,15 @@ def _table_accuracy_by_property(
             '<p style="font-size:0.78em;color:#64748b;margin:4px 0 0 0">'
             "WMAPE sem = precisión agregando forecast y reales por semana "
             "(grano operativo). †MAPE diario con reales diminutos "
-            "(P10 < 10 RN): ler con el grano semanal.</p>"
+            "(P10 < 10 RN): leer con el grano semanal. Cobertura = % de "
+            "reales dentro de la banda P10–P90 (nominal 80%); verde dentro "
+            "de ±5pp, ámbar ±10pp, rojo fuera. ⚠ provisional = < 365d de "
+            "histórico.</p>"
         )
     return (
         '<table class="tbl"><thead><tr><th>Propiedad</th><th>Modelo</th>'
         "<th>WMAPE</th><th>WMAPE sem</th><th>MAPE</th><th>Bias</th>"
-        "<th>n obs</th></tr></thead>"
+        "<th>Cobertura</th><th>n obs</th></tr></thead>"
         "<tbody>" + "".join(rows) + "</tbody></table>" + nota
     )
 
@@ -495,6 +988,11 @@ def _img_tag(b64: str | None, alt: str) -> str:
 
 
 def _kpi_grid(kpis: dict | None, champion: str | None = None) -> str:
+    """Franja de KPIs ejecutivos: etiqueta ceja + valor display serif.
+
+    Los valores usan tipografía serif editorial con dígitos tabulares — el
+    lenguaje visual de un reporte financiero, no de un dashboard genérico.
+    """
     if not kpis and not champion:
         return ""
     labels = {
@@ -511,7 +1009,8 @@ def _kpi_grid(kpis: dict | None, champion: str | None = None) -> str:
     if champion:
         cells.append(
             f'<div class="kpi"><span class="kpi-l">Campeón</span>'
-            f'<span class="kpi-v">{champion}</span></div>'
+            f'<span class="kpi-v kpi-model">{champion}</span>'
+            f'<span class="kpi-x">modelo operante</span></div>'
         )
     for key, label in labels.items():
         if not kpis or key not in kpis:
@@ -528,12 +1027,27 @@ def _kpi_grid(kpis: dict | None, champion: str | None = None) -> str:
                 shown = f"{val:.1f}%"
             elif key == "forecast_accuracy_wmape":
                 shown = f"{val:.3f}"
+            elif key == "forecast_bias":
+                shown = f"{val:+.1%}"
             else:
                 shown = f"{val:,.1f}"
         except (TypeError, ValueError):
             shown = str(val)
-        cells.append(f'<div class="kpi"><span class="kpi-l">{label}</span>'
-                     f'<span class="kpi-v">{shown}</span></div>')
+        hint = {
+            "forecast_accuracy_wmape": "ponderado por volumen",
+            "forecast_accuracy_mape": "promedio simple por día",
+            "forecast_bias": "negativo = sub-estima",
+            "forecast_room_nights": "noches en la ventana",
+            "forecast_occupancy": "vs inventario disponible",
+            "expected_pickup": "además de lo reservado",
+            "capacity_utilization": "inventario usado",
+            "n_properties_evaluated": "con reales en la ventana",
+        }.get(key, "")
+        cells.append(
+            f'<div class="kpi"><span class="kpi-l">{label}</span>'
+            f'<span class="kpi-v">{shown}</span>'
+            f'{f"<span class=kpi-x>{hint}</span>" if hint else ""}</div>'
+        )
     if not cells:
         return ""
     return '<div class="kpis">' + "".join(cells) + "</div>"
@@ -566,7 +1080,17 @@ def generate_visual_report(
     model_by_property: dict | None = None,
     backtest_report: dict | None = None,
     champion: str | None = None,
-    title: str = "Reporte de revisión · Forecast de Room Nights",
+    significance: dict | None = None,
+    interval_coverage: dict | None = None,
+    cold_start: dict[str, str] | None = None,
+    drift_alerts: list | None = None,
+    monitoring_state: dict | None = None,
+    bias_correction: dict | None = None,
+    vintage_tracking: dict | None = None,
+    forecast_revision: dict | None = None,
+    run_id: str | None = None,
+    run_mode: str | None = None,
+    title: str = "Room Nights Forecast Engine",
 ) -> Path:
     """Escribe ``<run_dir>/report.html`` con los gráficos embebidos.
 
@@ -577,9 +1101,19 @@ def generate_visual_report(
     ``backtest_report``/``champion``; ``property_weekly_breakdown`` agrega
     la columna de WMAPE semanal a la tabla de accuracy; sin ellos el
     reporte queda como la vista de portafolio clásica.
+
+    Auto-explicado (spec reporting): cada sección lleva su guía de lectura
+    plegable, un glosario arriba y un panel de **interpretación y
+    validación** con veredictos por métrica (WMAPE, bias, cobertura de
+    banda, convergencia, significancia del campeón, cold start, drift YoY
+    y estado del registro). Los veredictos son ayuda de lectura — los
+    gates duros viven en los criterios de aceptación del runner.
     """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # sistema visual: los gráficos hablan el mismo idioma que la página
+    _apply_chart_style()
 
     forecast = _with_lead_band(forecast)
     actual_series = actual
@@ -588,98 +1122,264 @@ def generate_visual_report(
         if len(actual_series) != len(forecast):
             actual_series = None
 
-    sections = [
-        ("Forecast", _chart_forecast(forecast)),
-        ("Forecast vs Real", _chart_forecast_vs_actual(forecast, actual_series)),
-        ("Forecast por propiedad",
-         _chart_forecast_by_property(forecast, actual_series, model_by_property)),
-        ("Benchmark", _chart_benchmark(benchmark)),
-        ("Pickup", _chart_pickup(forecast)),
-        ("Ocupación", _chart_occupancy(forecast)),
-        ("EDA", _chart_eda(demand)),
-    ]
-    scatter = _scatter_forecast_vs_actual(forecast, actual_series)
+    def _card(name: str, img: str | None, extra: str = "",
+              wide: bool = False, placeholder: bool = True) -> str:
+        """Tarjeta de sección.
 
-    cards = []
-    for name, img in sections:
-        if img is None and name in {"Forecast vs Real"}:
-            continue
-        cards.append(f'<section class="card"><h2>{name}</h2>{_img_tag(img, name)}</section>')
-    if scatter:
-        cards.append(f'<section class="card narrow"><h2>Dispersión</h2>'
-                     f"{_img_tag(scatter, 'dispersión')}</section>")
+        ``placeholder=True``: sin datos → la sección aparece con un mensaje
+        (el lector sabe que existe y por qué está vacía). ``placeholder=False``:
+        sin imagen NI extra → la sección se omite (secciones que dependen de
+        desgloses opcionales: vs-real, accuracy, revisiones, dispersión).
+        """
+        if img is None and not extra and not placeholder:
+            return ""
+        img_html = _img_tag(img, name) if img else (
+            f'<p class="muted">— {name}: sin datos en esta corrida.</p>'
+            if placeholder else ""
+        )
+        cls = "card wide" if wide else "card"
+        return (
+            f'<section class="{cls}"><h2>{name}</h2>'
+            f"{img_html}{extra}{_explainer(name)}</section>"
+        )
 
-    # ---- accuracy por propiedad: barras + tabla exacta en la misma tarjeta
-    acc_img = _chart_accuracy_by_property(property_breakdown)
-    acc_tbl = _table_accuracy_by_property(
-        property_breakdown, model_by_property, property_weekly_breakdown
+    # ---- resumen ejecutivo: el tablero de veredictos va primero
+    resumen = _validation_panel(
+        metrics=metrics,
+        benchmark=benchmark,
+        champion=champion,
+        significance=significance,
+        interval_coverage=interval_coverage,
+        backtest_report=backtest_report,
+        cold_start=cold_start,
+        drift_alerts=drift_alerts,
+        monitoring_state=monitoring_state,
+        bias_correction=bias_correction,
+        vintage_tracking=vintage_tracking,
+        forecast_revision=forecast_revision,
     )
-    if acc_img or acc_tbl:
-        cards.append(
-            '<section class="card"><h2>Accuracy por propiedad</h2>'
-            f"{_img_tag(acc_img, 'accuracy por propiedad')}{acc_tbl}</section>"
+
+    # ---- precisión: cómo de bien pronostica el motor
+    rev_lead_img = _chart_revisions_by_lead(backtest_report)
+    rev_extra = ""
+    if rev_lead_img:
+        rev_extra += _img_tag(rev_lead_img, "convergencia por anticipación")
+    rev_extra += _table_backtest_lead_band(backtest_report)
+
+    precision = [
+        _card("Benchmark", _chart_benchmark(benchmark, champion)),
+        _card(
+            "Accuracy por propiedad",
+            _chart_accuracy_by_property(property_breakdown),
+            extra=_table_accuracy_by_property(
+                property_breakdown, model_by_property, property_weekly_breakdown,
+                interval_coverage=interval_coverage, cold_start=cold_start,
+            ),
+            wide=True,
+            placeholder=False,
+        ),
+        _card(
+            "Revisiones T-90..T-1 · por propiedad",
+            _chart_backtest_by_property(backtest_report),
+            extra=rev_extra,
+            wide=True,
+            placeholder=False,
+        ),
+        _card("Dispersión", _scatter_forecast_vs_actual(forecast, actual_series),
+              placeholder=False),
+    ]
+
+    # ---- pronóstico: lo que se publica y de qué está hecho
+    forecast_cards = [
+        _card("Forecast", _chart_forecast(forecast), wide=True),
+        _card(
+            "Forecast vs Real",
+            _chart_forecast_vs_actual(forecast, actual_series),
+            wide=True,
+            placeholder=False,
+        ),
+        _card("Forecast por propiedad",
+              _chart_forecast_by_property(forecast, actual_series, model_by_property),
+              wide=True),
+        _card("Ocupación", _chart_occupancy(forecast)),
+        _card("Pickup", _chart_pickup(forecast)),
+    ]
+
+    # ---- contexto: el mundo sobre el que se entrena y el vocabulario
+    contexto = [
+        _card("EDA", _chart_eda(demand), wide=True),
+        (
+            '<section class="card"><h2>Métricas</h2>'
+            f"{_fmt_metrics(metrics)}</section>"
+        ),
+        _glossary_card(),
+    ]
+
+    def _group(eyebrow: str, cards: list[str]) -> str:
+        clean = [c for c in cards if c]
+        if not clean:
+            return ""
+        return (
+            f'<div class="group"><p class="eyebrow">{eyebrow}</p>'
+            f'<div class="grid">{"".join(clean)}</div></div>'
         )
 
-    # ---- revisiones T-90..T-1: por propiedad + convergencia por lead band
-    rev_prop = _chart_backtest_by_property(backtest_report)
-    rev_lead = _chart_revisions_by_lead(backtest_report)
-    rev_tbl = _table_backtest_lead_band(backtest_report)
-    if rev_prop or rev_lead or rev_tbl:
-        cards.append(
-            '<section class="card"><h2>Revisiones T-90..T-1 · por propiedad</h2>'
-            f"{_img_tag(rev_prop, 'revisiones por propiedad')}"
-            f"{_img_tag(rev_lead, 'convergencia por anticipación')}"
-            f"{rev_tbl}</section>"
-        )
+    groups = "".join([
+        _group("Resumen ejecutivo", [resumen]),
+        _group("Precisión", precision),
+        _group("Pronóstico", forecast_cards),
+        _group("Contexto", contexto),
+    ])
 
+    # ---- masthead: la franja de identidad + metadatos de la corrida
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    meta: list[str] = []
+    if run_id:
+        meta.append(f'<span class="meta"><b>corrida</b>{run_id}</span>')
+    if run_mode:
+        meta.append(f'<span class="meta"><b>modo</b>{run_mode}</span>')
+    if "stay_date" in forecast.columns:
+        stays = pd.to_datetime(forecast["stay_date"], errors="coerce").dropna()
+        if not stays.empty:
+            meta.append(
+                f'<span class="meta"><b>ventana</b>'
+                f"{stays.min().date()} → {stays.max().date()}</span>"
+            )
+    if champion:
+        meta.append(f'<span class="meta"><b>campeón</b>{champion}</span>')
+    meta.append(f'<span class="meta"><b>generado</b>{stamp}</span>')
+    meta_html = f'<div class="mast-meta">{"".join(meta)}</div>' if meta else ""
+
     html = f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>{title}</title>
+<title>{title} · {run_id or 'corrida'}</title>
 <style>
-  :root {{ color-scheme: light; }}
-  body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0;
-          background: #f8fafc; color: #1e293b; }}
-  header {{ background: #0f172a; color: #f8fafc; padding: 20px 28px; }}
-  header h1 {{ margin: 0; font-size: 20px; font-weight: 600; }}
-  header p {{ margin: 4px 0 0; color: #94a3b8; font-size: 13px; }}
-  main {{ padding: 24px 28px; max-width: 1100px; margin: 0 auto; }}
-  .kpis {{ display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }}
-  .kpi {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
-          padding: 12px 18px; min-width: 150px; }}
-  .kpi-l {{ display: block; font-size: 12px; color: #64748b; text-transform: uppercase; }}
-  .kpi-v {{ display: block; font-size: 22px; font-weight: 650; margin-top: 2px; }}
-  .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 20px; }}
-  .card {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
-           padding: 18px 20px; }}
-  .card.narrow {{ grid-column: span 1; }}
-  .card h2 {{ margin: 0 0 12px; font-size: 14px; font-weight: 600; color: #334155;
-              text-transform: uppercase; letter-spacing: .03em; }}
-  .card img {{ width: 100%; height: auto; margin-bottom: 10px; }}
-  .card img:last-child {{ margin-bottom: 0; }}
-  .muted {{ color: #94a3a3; font-style: italic; }}
-  table.tbl {{ border-collapse: collapse; width: 100%; font-size: 14px; }}
-  table.tbl th, table.tbl td {{ text-align: left; padding: 6px 10px;
-                                border-bottom: 1px solid #e2e8f0; }}
-  table.tbl th {{ color: #64748b; font-weight: 600; }}
-  footer {{ color: #94a3b8; font-size: 12px; padding: 16px 28px 32px; text-align: center; }}
-  .disc {{ background: #fef9c3; border: 1px solid #fde047; border-radius: 8px;
-           padding: 10px 14px; font-size: 13px; margin-bottom: 18px; }}
+  :root {{
+    color-scheme: light;
+    --paper: #F4F7F9; --card: #FFFFFF;
+    --ink: #0B2239; --text: #334155; --muted: #64748B; --faint: #94A3B8;
+    --line: #E2E8F0; --line-soft: #EEF2F6;
+    --petrol: #0E7490; --petrol-deep: #155E75; --petrol-tint: #E0F2F7;
+    --green: #15803D; --green-tint: #ECFDF5;
+    --amber: #B45309; --amber-tint: #FEF6E7;
+    --red: #B91C1C; --red-tint: #FDEEEE;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+    --sans: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{ margin: 0; background: var(--paper); color: var(--text);
+          font-family: var(--sans); font-size: 14px; line-height: 1.5; }}
+  /* ---- masthead: membrete de la corrida (la firma del reporte) ---- */
+  .mast {{ background: var(--card); border-top: 3px solid var(--petrol);
+           border-bottom: 1px solid var(--line); }}
+  .mast-inner {{ max-width: 1160px; margin: 0 auto; padding: 18px 28px 14px;
+                 display: flex; flex-wrap: wrap; gap: 12px 32px;
+                 justify-content: space-between; align-items: flex-end; }}
+  .mast-brand {{ display: flex; align-items: center; gap: 14px; }}
+  .mark {{ width: 40px; height: 40px; border-radius: 8px;
+           background: var(--ink); color: #fff; font: 700 15px var(--mono);
+           display: flex; align-items: center; justify-content: center;
+           letter-spacing: .04em; }}
+  .mast h1 {{ margin: 0; font-size: 19px; font-weight: 650; color: var(--ink);
+              letter-spacing: -.01em; }}
+  .mast-sub {{ margin: 2px 0 0; font-size: 12px; color: var(--muted); }}
+  .mast-meta {{ display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; }}
+  .meta {{ font: 400 11.5px var(--mono); color: var(--text); white-space: nowrap; }}
+  .meta b {{ color: var(--faint); font-weight: 500; margin-right: 6px;
+             text-transform: lowercase; }}
+  main {{ padding: 26px 28px 10px; max-width: 1160px; margin: 0 auto; }}
+  /* ---- KPIs: números serif con dígitos tabulares ---- */
+  .kpis {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+           gap: 12px; margin-bottom: 26px; }}
+  .kpi {{ background: var(--card); border: 1px solid var(--line);
+          border-radius: 10px; padding: 12px 16px 11px; }}
+  .kpi-l {{ display: block; font-size: 10.5px; font-weight: 600; color: var(--muted);
+            text-transform: uppercase; letter-spacing: .08em; }}
+  .kpi-v {{ display: block; font-family: var(--serif); font-size: 25px;
+            font-weight: 600; color: var(--ink); margin-top: 3px;
+            font-variant-numeric: tabular-nums; letter-spacing: -.01em; }}
+  .kpi-v.kpi-model {{ font-family: var(--mono); font-size: 15px; color: var(--petrol-deep);
+                      padding-top: 6px; }}
+  .kpi-x {{ display: block; font-size: 11px; color: var(--faint); margin-top: 2px; }}
+  /* ---- grupos: la estructura codifica el orden de lectura ---- */
+  .group {{ margin-bottom: 26px; }}
+  .eyebrow {{ margin: 0 0 10px; font-size: 11px; font-weight: 700;
+              color: var(--petrol-deep); text-transform: uppercase;
+              letter-spacing: .12em; display: flex; align-items: center; gap: 12px; }}
+  .eyebrow::after {{ content: ""; flex: 1; height: 1px; background: var(--line); }}
+  .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr));
+           gap: 16px; }}
+  .card {{ background: var(--card); border: 1px solid var(--line);
+           border-radius: 10px; padding: 16px 18px; }}
+  .card.wide {{ grid-column: 1 / -1; }}
+  .card h2 {{ margin: 0 0 10px; font-size: 13px; font-weight: 650; color: var(--ink);
+              text-transform: uppercase; letter-spacing: .05em; }}
+  .card img {{ width: 100%; height: auto; }}
+  .card img + img {{ margin-top: 10px; }}
+  /* ---- tablas ---- */
+  table.tbl {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
+  table.tbl th {{ text-align: left; padding: 7px 10px 5px; color: var(--muted);
+                  font-size: 10.5px; font-weight: 600; text-transform: uppercase;
+                  letter-spacing: .06em; border-bottom: 1px solid var(--line); }}
+  table.tbl td {{ text-align: left; padding: 7px 10px;
+                  border-bottom: 1px solid var(--line-soft);
+                  font-variant-numeric: tabular-nums; }}
+  table.tbl tr:last-child td {{ border-bottom: none; }}
+  .muted {{ color: var(--faint); font-style: italic; }}
+  /* ---- guías de lectura plegables ---- */
+  details.expl {{ margin-top: 12px; border-top: 1px dashed var(--line);
+                  padding-top: 8px; }}
+  details.expl summary {{ cursor: pointer; font-size: 12px; font-weight: 600;
+                          color: var(--petrol-deep); }}
+  details.expl summary:hover {{ color: var(--petrol); }}
+  details.expl p {{ font-size: 12.5px; color: #475569; line-height: 1.6;
+                    margin: 8px 0 0; }}
+  /* ---- lámparas de veredicto ---- */
+  .chip {{ display: inline-block; position: relative; padding: 3px 10px 3px 22px;
+           font-size: 11.5px; font-weight: 600; border-radius: 999px;
+           white-space: nowrap; }}
+  .chip::before {{ content: ""; position: absolute; left: 9px; top: 50%;
+                   transform: translateY(-50%); width: 7px; height: 7px;
+                   border-radius: 50%; background: currentColor; }}
+  .chip.ok {{ background: var(--green-tint); color: var(--green); }}
+  .chip.warn {{ background: var(--amber-tint); color: var(--amber); }}
+  .chip.bad {{ background: var(--red-tint); color: var(--red); }}
+  .chip.info {{ background: var(--line-soft); color: var(--text); }}
+  table.verdict th:nth-child(3) {{ width: 44%; }}
+  table.verdict td {{ vertical-align: top; }}
+  .flag {{ background: var(--amber-tint); color: var(--amber); font-size: 10.5px;
+           font-weight: 600; border-radius: 5px; padding: 1px 6px;
+           white-space: nowrap; }}
+  .cov-ok {{ color: var(--green); font-weight: 600; }}
+  .cov-warn {{ color: var(--amber); font-weight: 600; }}
+  .cov-bad {{ color: var(--red); font-weight: 600; }}
+  footer {{ color: var(--faint); font-size: 11.5px; padding: 8px 28px 34px;
+            text-align: center; max-width: 1160px; margin: 0 auto; }}
+  footer b {{ color: var(--muted); font-weight: 600; }}
+  @media print {{
+    body {{ background: #fff; }}
+    .card, .kpi {{ break-inside: avoid; }}
+    .grid {{ grid-template-columns: 1fr; }}
+  }}
 </style></head>
 <body>
-<header>
-  <h1>{title}</h1>
-  <p>Generado {stamp} · vista de análisis (la lógica vive en src/, este reporte solo presenta)</p>
-</header>
+<div class="mast"><div class="mast-inner">
+  <div class="mast-brand">
+    <span class="mark">RN</span>
+    <div>
+      <h1>{title}</h1>
+      <p class="mast-sub">Enjoy Costa Rica · Revenue Management · reporte de revisión</p>
+    </div>
+  </div>
+  {meta_html}
+</div></div>
 <main>
   {_kpi_grid(kpis, champion)}
-  <div class="grid">
-    {"".join(cards)}
-    <section class="card"><h2>Métricas</h2>{_fmt_metrics(metrics)}</section>
-  </div>
+  {groups}
 </main>
-<footer>Vista generada automáticamente. Los 10 entregables del spec permanecen en la raíz de la corrida.</footer>
+<footer><b>Reproducible</b>: misma seed → mismos resultados · los 10 entregables y el manifiesto quedan en la raíz de la corrida · vista generada automáticamente, la lógica vive en <b>src/</b></footer>
 </body></html>"""
 
     out = run_dir / "report.html"

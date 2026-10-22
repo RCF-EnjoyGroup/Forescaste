@@ -80,6 +80,29 @@ benchmark:
   fold_horizon_days: 90
   n_folds: 4
 
+# Monitoreo con estado entre corridas (spec monitoring): el registro persiste
+# métricas/campeón/cobertura de cada corrida para que el drift de métricas
+# (10.1), la política de re-entrenamiento (10.4) y la histéresis del campeón
+# por propiedad operen con memoria real. Con ruta inexistente o corrupta el
+# motor queda idéntico (el registro jamás rompe la corrida).
+monitoring:
+  registry_path: outputs/monitoring/run_registry.json
+  # Drift de demanda POR PROPIEDAD contra la misma ventana calendario un
+  # año atrás (YoY). La referencia "primera mitad del histórico" disparaba
+  # SIEMPRE: el portafolio creció de 1-2 hoteles a 6 (medias 51 → 560 RN).
+  # Umbrales calibrados para ventana de 90d (PSI nulo p95≈0.22 con 5 bins
+  # y suavizado de conteos): warning 0.30 ≈ cambio de nivel ≥4-5%.
+  drift_current_window_days: 90
+  psi_warning: 0.30
+  psi_alert: 0.50
+  # Corrección de bias por (propiedad, banda de lead) aprendida de los folds
+  # del forecast operativo (shrinkage hacia 1.0 según el tamaño de muestra;
+  # el backtest documenta sobre-pronóstico de +23%/+30% a leads 60-90+)
+  bias_correction:
+    min_obs: 20
+    shrinkage: 30
+    max_rel: 0.30
+
 # Calendario de feriados (fuente confiable: librería `holidays`): CR (Semana
 # Santa, Anexión, Día de la Madre, Independencia…) + mercados emisores US
 # (Thanksgiving, Memorial, Labor Day, 4 de julio). Fechas movibles resueltas

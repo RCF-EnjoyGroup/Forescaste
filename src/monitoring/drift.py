@@ -138,6 +138,115 @@ def check_distribution_drift(
     )
 
 
+def population_stability_index(
+    current: pd.Series, reference: pd.Series, n_bins: int = 5
+) -> float:
+    """PSI (Population Stability Index) entre referencia y ventana actual.
+
+    Bins de igual probabilidad sobre la referencia → PSI = Σ
+    (p_cur − p_ref)·ln(p_cur/p_ref). Diseñado para muestras diarias chicas
+    (una ventana de 90d):
+
+    - **5 bins** (no 10): el PSI nulo escala con (k−1)·(1/n₁ + 1/n₂)/2;
+      con deciles y n=90 la media nula ya era 0.23 — todo alertaba.
+    - **suavizado de conteos** (máx(count, 0.5)/n): un bin vacío por
+      azar no dispara ln(p curvo/ε) — remedio estándar de PSI.
+    """
+    ref = pd.to_numeric(reference, errors="coerce").dropna().to_numpy(dtype=float)
+    cur = pd.to_numeric(current, errors="coerce").dropna().to_numpy(dtype=float)
+    if len(ref) < 2 or len(cur) == 0:
+        return float("nan")
+    edges = np.unique(np.quantile(ref, np.linspace(0.0, 1.0, n_bins + 1)))
+    if len(edges) < 3:
+        # referencia (casi) constante: cualquier desviación de nivel es drift
+        return 0.0 if np.allclose(cur.mean(), ref.mean()) else float("inf")
+    edges = edges.tolist()
+    edges[0], edges[-1] = -np.inf, np.inf
+    idx_ref = np.clip(np.digitize(ref, edges[1:-1], right=True), 0, len(edges) - 2)
+    idx_cur = np.clip(np.digitize(cur, edges[1:-1], right=True), 0, len(edges) - 2)
+    n_b = len(edges) - 1
+    # suavizado 0.5: cuenta vacía → 0.5/n (estándar en monitoreo de PSI)
+    c_ref = np.maximum(np.bincount(idx_ref, minlength=n_b), 0.5) / len(ref)
+    c_cur = np.maximum(np.bincount(idx_cur, minlength=n_b), 0.5) / len(cur)
+    return float(np.sum((c_cur - c_ref) * np.log(c_cur / c_ref)))
+
+
+def demand_drift_alerts(
+    history: pd.DataFrame,
+    *,
+    cutoff: pd.Timestamp,
+    current_window_days: int = 90,
+    psi_warning: float = 0.30,
+    psi_alert: float = 0.50,
+    property_col: str = "property",
+    date_col: str = "stay_date",
+    value_col: str = "room_nights",
+) -> tuple[list[DriftAlert], dict]:
+    """Drift de demanda POR PROPIEDAD contra la misma ventana del año previo.
+
+    La comparación "primera mitad del histórico vs últimos 90d" dispara
+    SIEMPRE: el portafolio creció de 1-2 hoteles a 6 (medias 51 → 560 RN),
+    así que la alerta era ruido puro (fatiga). La referencia honesta es
+    estacionalmente comparable: la misma ventana calendario un año antes
+    (YoY), por propiedad. PSI (escala libre) en lugar de shift de medias.
+
+    Propiedades con < 1 año de histórico no tienen ventana YoY: se
+    documentan en ``skipped`` (sin alerta, sin inventar referencia).
+    """
+    cutoff = pd.Timestamp(cutoff)
+    work = history.copy()
+    work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
+    work[value_col] = pd.to_numeric(work[value_col], errors="coerce")
+
+    cur_start = cutoff - pd.Timedelta(days=current_window_days)
+    ref_start = cur_start - pd.Timedelta(days=365)
+    ref_end = cutoff - pd.Timedelta(days=365)
+
+    alerts: list[DriftAlert] = []
+    skipped: dict[str, str] = {}
+    for prop, grp in work.groupby(property_col, dropna=False):
+        s = (
+            grp.dropna(subset=[date_col, value_col])
+            .groupby(date_col)[value_col]
+            .sum()
+            .sort_index()
+        )
+        if s.empty:
+            continue
+        cur = s.loc[(s.index > cur_start) & (s.index <= cutoff)]
+        ref = s.loc[(s.index > ref_start) & (s.index <= ref_end)]
+        if ref.empty:
+            skipped[str(prop)] = (
+                "sin ventana YoY (< 365d de histórico): drift no evaluable"
+            )
+            continue
+        if len(cur) < 14:
+            skipped[str(prop)] = f"ventana actual con < 14 días con datos"
+            continue
+        psi = population_stability_index(cur, ref)
+        if not np.isfinite(psi):
+            sev: Severity = "alert"
+        elif psi >= psi_alert:
+            sev = "alert"
+        elif psi >= psi_warning:
+            sev = "warning"
+        else:
+            continue
+        alerts.append(
+            DriftAlert(
+                metric=f"demand_psi:{prop}",
+                severity=sev,
+                message=(
+                    f"Drift de demanda en {prop}: PSI YoY {psi:.3f} "
+                    f"(ventana {current_window_days}d vs misma ventana hace 1 año)"
+                ),
+                reference=float(ref.mean()),
+                current=float(cur.mean()),
+            )
+        )
+    return alerts, skipped
+
+
 def check_pickup_curve_drift(
     reference: pd.DataFrame,
     current: pd.DataFrame,
@@ -245,6 +354,41 @@ class ClassifiedOutlier:
         }
 
 
+def _rolling_zscore_by_date(
+    vals: pd.Series,
+    dates: pd.DatetimeIndex,
+    *,
+    window_days: int = 57,
+    min_periods: int = 14,
+) -> pd.Series:
+    """z-score contra baseline LOCAL (ventana rodante centrada por fecha).
+
+    La media/σ de TODO el histórico distorsiona el z cuando la propiedad
+    crece o cambia de régimen (MARINA 2023: su propio arranque de baja
+    demanda quedaba flaggeado como 'evento' contra la media 2023-26). El
+    baseline local compara cada día con su entorno de ±window_days/2:
+    captura picos aislados sin castigar niveles de arranque o estación
+    propios de la propiedad. Fallback al σ global solo cuando la ventana
+    local es degenerada (plana con pico incluido).
+    """
+    s = pd.Series(
+        pd.to_numeric(vals, errors="coerce").to_numpy(dtype=float),
+        index=pd.DatetimeIndex(dates),
+    ).dropna()
+    if s.empty:
+        return pd.Series(dtype=float)
+    if s.index.duplicated().any():
+        s = s.groupby(level=0).mean()
+    min_p = max(3, min(min_periods, len(s)))
+    med = s.rolling(f"{window_days}D", center=True, min_periods=min_p).median()
+    std = s.rolling(f"{window_days}D", center=True, min_periods=min_p).std()
+    scale = std.where(std > 0)
+    global_std = float(s.std()) if len(s) > 1 else 0.0
+    if np.isfinite(global_std) and global_std > 0:
+        scale = scale.fillna(global_std)
+    return ((s - med) / scale).dropna()
+
+
 def detect_outliers(
     df: pd.DataFrame,
     *,
@@ -253,18 +397,27 @@ def detect_outliers(
     property_col: str = "property",
     capacity_col: str | None = "capacity",
     threshold: float = 3.0,
+    window_days: int = 57,
 ) -> list[ClassifiedOutlier]:
-    """10.3 — Detecta picos/caídas y los CLASIFICA (nunca los elimina)."""
+    """10.3 — Detecta picos/caídas y los CLASIFICA (nunca los elimina).
+
+    El z-score usa un baseline LOCAL por fecha (``window_days`` centrado)
+    con fallback al σ de la propiedad — ver ``_rolling_zscore_by_date``.
+    """
     out: list[ClassifiedOutlier] = []
     work = df.copy()
     work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
+    # orden cronológico dentro de cada propiedad: la clasificación
+    # estructural (nivel que se mantiene tras el pico) asume secuencia
+    work = work.sort_values([property_col, date_col], kind="stable")
 
-    for prop, grp in work.groupby(property_col, dropna=False):
-        vals = pd.to_numeric(grp[value_col], errors="coerce")
-        mean, std = vals.mean(), vals.std()
-        if not std or not np.isfinite(std):
+    for prop, grp in work.groupby(property_col, dropna=False, sort=False):
+        z_by_date = _rolling_zscore_by_date(
+            grp[value_col], pd.DatetimeIndex(grp[date_col]), window_days=window_days
+        )
+        if z_by_date.empty:
             continue
-        z = (vals - mean) / std
+        z = grp[date_col].map(z_by_date)
         flagged = grp.loc[z.abs() >= threshold]
         for idx, row in flagged.iterrows():
             zi = float(z.loc[idx])

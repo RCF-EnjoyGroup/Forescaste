@@ -41,6 +41,9 @@ EXTENDED_COLUMNS = [
     "forecast_occupancy",
     "forecast_bias",
     "confidence_level",
+    # corrección de bias por (propiedad, banda) aplicada al punto (1.0 = sin
+    # corrección); evidencia de folds del forecast operativo
+    "bias_correction_factor",
 ]
 
 

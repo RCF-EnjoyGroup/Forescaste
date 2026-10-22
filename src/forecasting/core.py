@@ -593,37 +593,35 @@ def _dow_profile(
     return profile / media
 
 
-def operative_residual_bands(
+def _operative_forecast_frame(
     fold_predictions: pd.DataFrame | None,
     model_by_property: dict[str, str],
     blend_by_property: dict[str, dict],
     dem: pd.DataFrame,
-) -> dict[tuple[str, str], pd.Series]:
-    """Residuos del forecast OPERATIVO por (propiedad, banda de lead).
+) -> pd.DataFrame:
+    """Ensambla el forecast operativo por fold (campeón + blend + DOW).
 
-    Ensambla por fold el forecast que opera en producción — campeón con
-    su blend (reemplazo largo) y su patrón DOW — a partir de las
-    predicciones que el benchmark ya computó (``real_fold_metrics`` las
-    retiene), sin re-entrenar nada, y emite sus residuos agrupados por
-    (propiedad, banda). Los intervalos describen el error de lo que se
-    publica, no el de los candidatos puros (spec forecasting).
+    Es el forecast que opera en producción reutilizando las predicciones
+    que el benchmark ya computó (``real_fold_metrics`` las retiene), sin
+    re-entrenar nada. La decisión de blend del corte T0 se aplica
+    uniforme a los folds; el perfil DOW se calcula as-of del corte de
+    CADA fold (el fold cutoff se recupera como ``stay_date - lead_days``).
 
-    La decisión del blend del corte T0 se aplica uniforme a los folds:
-    los intervalos calibran la configuración que opera. El perfil DOW se
-    calcula as-of del corte de CADA fold (el fold cutoff se recupera
-    como ``stay_date - lead_days``).
+    Returns
+    -------
+    Frame ``property/fold/stay_date/lead_days/forecast/actual`` — la base
+    compartida de los residuos de la banda Y de la corrección de bias.
     """
-    empty: dict[tuple[str, str], pd.Series] = {}
+    cols = ["property", "fold", "stay_date", "lead_days", "forecast", "actual"]
     if fold_predictions is None or len(fold_predictions) == 0:
-        return empty
+        return pd.DataFrame(columns=cols)
     needed = {"property", "fold", "model", "stay_date", "lead_days", "forecast", "actual"}
     if not needed <= set(fold_predictions.columns):
-        return empty
-    from src.evaluation.breakdowns import lead_band
+        return pd.DataFrame(columns=cols)
 
     work = fold_predictions.copy()
     work["stay_date"] = pd.to_datetime(work["stay_date"])
-    out: dict[tuple[str, str], pd.Series] = {}
+    frames: list[pd.DataFrame] = []
     for prop, prop_rows in work.groupby("property"):
         champion = model_by_property.get(str(prop))
         if champion is None or champion not in set(prop_rows["model"]):
@@ -633,7 +631,7 @@ def operative_residual_bands(
         long_model = entry.get("long_model") if entry.get("applied") else None
         split = int(entry.get("blend_split", BLEND_LEAD_SPLIT))
         use_profile = str(entry.get("long_pattern", "")).startswith("dow_profile")
-        operative = base[["lead_days", "actual", "forecast"]].copy()
+        operative = base[["fold", "lead_days", "actual", "forecast"]].copy()
         if long_model and long_model in set(prop_rows["model"]):
             alt = prop_rows.loc[prop_rows["model"] == long_model].set_index("stay_date")
             long_dates = operative.index[operative["lead_days"] > split]
@@ -658,13 +656,200 @@ def operative_residual_bands(
                     operative.loc[dates_fc, "forecast"] = (
                         operative.loc[dates_fc, "forecast"] * dows.map(profile)
                     )
-        residuals = operative["forecast"] - operative["actual"]
-        residuals = residuals.dropna()
-        if residuals.empty:
+        operative = operative.reset_index()
+        operative["property"] = str(prop)
+        frames.append(operative[cols])
+    if not frames:
+        return pd.DataFrame(columns=cols)
+    return pd.concat(frames, ignore_index=True)
+
+
+def operative_residual_bands(
+    fold_predictions: pd.DataFrame | None,
+    model_by_property: dict[str, str],
+    blend_by_property: dict[str, dict],
+    dem: pd.DataFrame,
+    bias_factors: dict[tuple[str, str], float] | None = None,
+) -> dict[tuple[str, str], pd.Series]:
+    """Residuos del forecast OPERATIVO por (propiedad, banda de lead).
+
+    Ensambla por fold el forecast que opera en producción — campeón con
+    su blend (reemplazo largo) y su patrón DOW — a partir de las
+    predicciones que el benchmark ya computó (``real_fold_metrics`` las
+    retiene), sin re-entrenar nada, y emite sus residuos agrupados por
+    (propiedad, banda). Los intervalos describen el error de lo que se
+    publica, no el de los candidatos puros (spec forecasting).
+
+    Con ``bias_factors`` (ver ``lead_bias_factors``) los residuos son los
+    del forecast CORREGIDO: ``forecast·factor − actual`` — la banda calibra
+    el pipeline completo que se publica (punto corregido + banda), no una
+    versión intermedia.
+    """
+    from src.evaluation.breakdowns import lead_band
+
+    frame = _operative_forecast_frame(
+        fold_predictions, model_by_property, blend_by_property, dem
+    )
+    if frame.empty:
+        return {}
+    work = frame.copy()
+    work["lead_band"] = work["lead_days"].map(lead_band)
+    out: dict[tuple[str, str], pd.Series] = {}
+    for (prop, band), grp in work.groupby(["property", "lead_band"], observed=True):
+        factor = float((bias_factors or {}).get((str(prop), str(band)), 1.0))
+        res = (grp["forecast"] * factor - grp["actual"]).dropna()
+        if res.empty:
             continue
-        bands = operative.loc[residuals.index, "lead_days"].map(lead_band)
-        for band, res in residuals.groupby(bands):
-            out[(str(prop), str(band))] = res.reset_index(drop=True)
+        out[(str(prop), str(band))] = res.reset_index(drop=True)
+    return out
+
+
+def lead_bias_factors(
+    fold_predictions: pd.DataFrame | None,
+    model_by_property: dict[str, str],
+    blend_by_property: dict[str, dict],
+    dem: pd.DataFrame,
+    *,
+    min_obs: int = 20,
+    shrinkage: int = 30,
+    max_rel: float = 0.30,
+    min_correction: float = 0.005,
+    min_consistency: float = 0.75,
+) -> tuple[dict[tuple[str, str], float], dict]:
+    """Corrección de bias por (propiedad, banda de lead) — evidencia de folds.
+
+    El backtest operativo documenta sobre-pronóstico sistemático a leads
+    largos (+23% bias en 60-89, +30% en 90+): la convergencia estacional
+    de la curva sobre-estima en temporada baja. La corrección se aprende
+    de los residuos del forecast OPERATIVO (mismo ensamble que la banda):
+
+    - ``rel_bias = Σ(forecast − actual) / Σ|actual|`` por celda →
+      ``factor = 1 − rel_bias``;
+    - **gate de consistencia**: el bias debe tener el mismo signo en ≥
+      ``min_consistency`` de los folds — con 4 folds, el bias por celda
+      oscila salvajemente entre ventanas (p. ej. +25/−17/−7/+55% en una
+      celda real) y la media la domina un solo fold: sesgo inestable =
+      ruido de régimen (p. ej. ``seasonal_naive`` retrasa la tendencia y
+      su sesgo gira con la estación), NO evidencia para corregir;
+    - **shrinkage** hacia 1.0 según el tamaño de muestra
+      (``n/(n+shrinkage)``): con 4 folds, una celda chica no corrige a
+      ciegas;
+    - clip ``±max_rel`` (correcciones > 30% no son bias, son otro régimen);
+    - celdas con < ``min_obs`` observaciones y correcciones < 0.5% no
+      tocan el punto (ruido, no evidencia).
+
+    Returns
+    -------
+    (factors, report): factores por (propiedad, banda) y detalle por
+    celda (n, bias relativo, consistencia, factor) para el manifiesto.
+    """
+    from src.evaluation.breakdowns import lead_band
+
+    factors: dict[tuple[str, str], float] = {}
+    frame = _operative_forecast_frame(
+        fold_predictions, model_by_property, blend_by_property, dem
+    )
+    if frame.empty:
+        return factors, {"note": "sin predicciones de folds (sin corrección)"}
+    work = frame.dropna(subset=["forecast", "actual"]).copy()
+    work["lead_band"] = work["lead_days"].map(lead_band)
+
+    cells: list[dict] = []
+    n_corrected = 0
+    for (prop, band), grp in work.groupby(["property", "lead_band"], observed=True):
+        n = int(len(grp))
+        denom = float(grp["actual"].abs().sum())
+        if n < min_obs or denom <= 0:
+            cells.append(
+                {"property": str(prop), "lead_band": str(band), "n_obs": n,
+                 "rel_bias": None, "consistency": None, "factor": 1.0,
+                 "applied": False, "reason": f"n<{min_obs} o sin reales"}
+            )
+            continue
+        rel = float((grp["forecast"] - grp["actual"]).sum() / denom)
+        # consistencia del signo del bias entre folds (estabilidad del
+        # sesgo): un sesgo que gira entre ventanas es régimen, no bias
+        fold_biases = (
+            grp.groupby("fold")
+            .apply(lambda g: float((g["forecast"] - g["actual"]).sum()
+                                   / g["actual"].abs().sum()), include_groups=False)
+            if "fold" in grp.columns and grp["fold"].nunique() > 1
+            else None
+        )
+        consistency = None
+        if fold_biases is not None and len(fold_biases.dropna()) > 0:
+            agg_sign = 1 if rel > 0 else -1
+            signs = fold_biases.dropna().map(lambda v: 1 if v > 0 else -1)
+            consistency = float((signs == agg_sign).mean())
+        if consistency is not None and consistency < min_consistency:
+            cells.append(
+                {"property": str(prop), "lead_band": str(band), "n_obs": n,
+                 "rel_bias": rel, "consistency": consistency, "factor": 1.0,
+                 "applied": False,
+                 "reason": (
+                     f"sesgo inestable entre folds (consistencia "
+                     f"{consistency:.0%} < {min_consistency:.0%})"
+                 )}
+            )
+            continue
+        raw = float(np.clip(1.0 - rel, 1.0 - max_rel, 1.0 + max_rel))
+        weight = n / (n + shrinkage)
+        factor = 1.0 + (raw - 1.0) * weight
+        applied = abs(factor - 1.0) >= min_correction
+        if not applied:
+            factor = 1.0
+        else:
+            n_corrected += 1
+        factors[(str(prop), str(band))] = factor
+        cells.append(
+            {"property": str(prop), "lead_band": str(band), "n_obs": n,
+             "rel_bias": rel, "consistency": consistency, "factor": factor,
+             "applied": applied}
+        )
+    return factors, {
+        "n_cells": len(cells),
+        "n_corrected": n_corrected,
+        "min_obs": min_obs,
+        "shrinkage": shrinkage,
+        "max_rel": max_rel,
+        "min_consistency": min_consistency,
+        "cells": cells,
+    }
+
+
+def apply_bias_factors(
+    frame: pd.DataFrame,
+    factors: dict[tuple[str, str], float] | None,
+    *,
+    property_col: str = "property",
+    lead_col: str = "lead_days",
+    target_col: str = "raw_forecast_rn",
+) -> pd.DataFrame:
+    """Aplica la corrección por (propiedad, banda) al forecast publicado.
+
+    Multiplicativa sobre el punto ANTES del piso de reservas y el techo
+    de capacidad (las restricciones se re-aplican después): una corrección
+    a la baja jamás publica menos que lo ya reservado, y una al alza
+    jamás supera el inventario.
+    """
+    if not factors or frame is None or frame.empty:
+        return frame
+    if target_col not in frame.columns or lead_col not in frame.columns:
+        return frame
+    from src.evaluation.breakdowns import lead_band
+
+    out = frame.copy()
+    bands = out[lead_col].map(lead_band)
+    props = out[property_col].astype(str)
+    factor = pd.Series(1.0, index=out.index)
+    for (prop, band), f in factors.items():
+        if float(f) == 1.0:
+            continue
+        mask = (props == str(prop)) & (bands == str(band))
+        if mask.any():
+            factor.loc[mask] = float(f)
+    out[target_col] = pd.to_numeric(out[target_col], errors="coerce") * factor
+    out["bias_correction_factor"] = factor
     return out
 
 

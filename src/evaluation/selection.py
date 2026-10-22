@@ -283,6 +283,7 @@ def select_per_property(
     property_col: str = "property",
     global_champion: str | None = None,
     override_margin: float = PROPERTY_OVERRIDE_MARGIN,
+    incumbent: dict[str, str] | None = None,
 ) -> SelectionResult:
     """6.8 — Selección por propiedad con mínimo de ventanas y fallback global.
 
@@ -294,6 +295,16 @@ def select_per_property(
     PROPIEDAD por el margen relativo dado; de lo contrario la propiedad
     retiene al campeón global y el fallback documenta la retención —
     4 folds no distinguen empates (estabilidad entre corridas).
+
+    Con ``incumbent`` (modelo por propiedad de la corrida ANTERIOR, del
+    registro): histéresis — el incumbente se retiene salvo que el mejor
+    candidato de ESTA corrida lo supere por el mismo margen de
+    materialidad. Con empates DM por todas partes (p=0.29..0.70), los
+    overrides por propiedad oscilaban entre corridas (FIESTA
+    seasonal_naive↔lightgbm↔sarimax): un modelo que cambia cada corrida
+    erosiona la confianza operativa; cambiar exige evidencia material.
+    El incumbente ausente de los candidatos elegibles de esta corrida no
+    bloquea la selección (se ignora la histéresis y se documenta).
     """
     fold_metrics = _without_portfolio_rows(fold_metrics, property_col)
     if global_champion is None:
@@ -318,7 +329,26 @@ def select_per_property(
             fallback[str(prop)] = "sin selección propia (insuficiente evidencia)"
             continue
         scores = score_candidates(usable, model_col, fold_col)
+        score_by_model = {s.model: s for s in scores}
         winner = min(scores, key=lambda s: s.composite)
+
+        # histéresis del incumbente (corrida anterior): retener salvo
+        # evidencia material — el churn entre corridas era ruido de empates
+        prev_model = (incumbent or {}).get(str(prop))
+        if (
+            prev_model is not None
+            and prev_model != winner.model
+            and prev_model in score_by_model
+            and winner.composite > score_by_model[prev_model].composite * (1.0 - override_margin)
+        ):
+            by_property[str(prop)] = prev_model
+            fallback[str(prop)] = (
+                f"incumbente retenido: '{winner.model}' ({winner.composite:.4f}) "
+                f"no supera el margen {override_margin:.0%} sobre '{prev_model}' "
+                f"({score_by_model[prev_model].composite:.4f}) de la corrida anterior"
+            )
+            continue
+
         if winner.model != global_champion and override_margin > 0:
             global_score = next(
                 (s for s in scores if s.model == global_champion), None

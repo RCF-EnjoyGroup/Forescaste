@@ -51,6 +51,8 @@ def _forecast_df(with_intervals=True, with_extended=True):
         df["forecast_occupancy"] = df["final_forecast_rn"] / 100
         df["forecast_bias"] = 0.02
         df["confidence_level"] = 0.8
+        # corrección de bias por (propiedad, banda) aplicada al punto
+        df["bias_correction_factor"] = 0.95
     return df
 
 
@@ -428,6 +430,181 @@ def test_reporte_visual_ignora_actual_de_longitud_distinta(tmp_path):
     bad = pd.Series([1.0, 2.0])  # largo != len(fc)
     out = generate_visual_report(tmp_path, fc, actual=bad)
     assert out.exists(), "un actual mal alineado no debe romper el reporte"
+
+
+# ----------------- reporte auto-explicado: guías + validación ------------
+
+
+_COVERAGE = {
+    "global": {"coverage": 0.76, "n_obs": 540, "nominal": 0.80},
+    "by_property": [
+        {"property": "CORIN", "coverage": 0.70, "n_obs": 90, "nominal": 0.80},
+        {"property": "FIESTA", "coverage": 0.82, "n_obs": 90, "nominal": 0.80},
+    ],
+    "by_lead_band": [],
+    "by_property_lead_band": [],
+}
+
+
+def test_reporte_visual_panel_de_validacion_con_veredictos(tmp_path):
+    """El panel traduce cada métrica a veredicto verificable con criterio."""
+    out = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.13, "mape": 22.0, "bias": -0.03, "n_obs": 540},
+        benchmark=run_benchmark(_fold_metrics()).table,
+        champion="pickup_curve",
+        significance={"champion": "pickup_curve", "runner_up": "catboost",
+                      "pvalue": 0.70, "significant": False},
+        interval_coverage=_COVERAGE,
+        backtest_report=_backtest_report_dict(),
+        cold_start={"SJOSL": "183d < 365d de histórico: forecast provisional"},
+        drift_alerts=[{"metric": "demand_psi:MARINA", "severity": "warning",
+                       "message": "Drift de demanda en MARINA: PSI YoY 0.334"}],
+        monitoring_state={"days_since_last": 0, "new_records": 0,
+                          "has_previous_run": True,
+                          "previous_run_id": "futuro-20261019-1555"},
+        bias_correction={"n_cells": 42, "n_corrected": 13},
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "Interpretación y validación" in html
+    # WMAPE bueno y bias calibrado
+    assert "Bien" in html and "Calibrado" in html
+    # cobertura global dentro de ±10pp pero con propiedad fuera de ±5pp
+    assert "CORIN 70%" in html
+    # convergencia del backtest (0.10 en 1-2 vs ausente 60-89 → fila omitida
+    # si falta la banda; con el dict de _backtest_report_dict hay 1-2 y 90+
+    # pero no 60-89 → la fila de convergencia no aparece)
+    # significancia: empate DM → parsimonia
+    assert "Empate" in html and "parsimonia" in html
+    # cold start y drift con hallazgo YoY
+    assert "provisional" in html and "hallazgo(s) YoY" in html
+    # estado del registro con memoria
+    assert "Memoria activa" in html and "futuro-20261019-1555" in html
+    # corrección de bias documentada
+    assert "13/42" in html
+
+
+def test_reporte_visual_panel_validacion_sin_datos_se_omite(tmp_path):
+    out = generate_visual_report(tmp_path, _forecast_df())
+    html = out.read_text(encoding="utf-8")
+    assert "Interpretación y validación" not in html
+
+
+def test_reporte_visual_cobertura_corrida_futura_documentada(tmp_path):
+    """Sin reales sobre la banda (corrida futura): la fila queda N/D explicada."""
+    out = generate_visual_report(
+        tmp_path, _forecast_df(),
+        metrics={"wmape": 0.15, "mape": 26.0, "bias": -0.02, "n_obs": 516},
+        interval_coverage={"note": "banda P10-P90 no disponible"},
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "N/D" in html
+    assert "corrida futura" in html
+
+
+def test_reporte_visual_guias_de_lectura_plegables(tmp_path):
+    out = generate_visual_report(tmp_path, _forecast_df())
+    html = out.read_text(encoding="utf-8")
+    assert 'details class="expl"' in html
+    assert "¿Cómo leer esta sección?" in html
+    # la guía de la banda aparece en la sección Forecast
+    assert "80% de probabilidad" in html
+
+
+def test_reporte_visual_glosario_de_terminos_presente(tmp_path):
+    out = generate_visual_report(tmp_path, _forecast_df())
+    html = out.read_text(encoding="utf-8")
+    assert "Glosario rápido" in html
+    for term in ("WMAPE", "MAPE", "Bias", "Lead days", "P10/P50/P90",
+                 "Vintage / forecast_date"):
+        assert term in html
+
+
+def test_reporte_visual_accuracy_con_cobertura_y_provisional(tmp_path):
+    """La tabla de accuracy muestra la cobertura por propiedad y marca ⚠."""
+    fc = _fc_multi_propiedad()
+    daily = _property_breakdown_df()
+    out = generate_visual_report(
+        tmp_path, fc,
+        property_breakdown=daily,
+        model_by_property={"CORIN": "pickup_curve", "FIESTA": "sarimax"},
+        interval_coverage=_COVERAGE,
+        cold_start={"FIESTA": "200d < 365d de histórico: forecast provisional"},
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "Cobertura" in html, "la columna de cobertura debe aparecer"
+    assert 'class="cov-bad">70%' in html, "CORIN al 70% se marca en rojo"
+    assert 'class="cov-ok">82%' in html, "FIESTA al 82% se marca en verde"
+    assert "⚠ provisional" in html, "la propiedad cold start queda marcada"
+
+
+def test_benchmark_campeon_resuelto_de_columna_o_parametro():
+    """El realce del campeón no se pierde con tablas reconstruidas.
+
+    Regresión: regen_report.py reconstruye la tabla del benchmark desde
+    model_benchmark.md — sin is_champion ni fallback, la barra del campeón
+    dejaba de pintarse.
+    """
+    from src.reporting.visual_report import _resolve_champion
+
+    table = pd.DataFrame({
+        "model": ["pickup_curve", "catboost"], "wmape": [0.20, 0.22],
+    })
+    # sin columna: el campeón explícito (p. ej. del manifiesto) hace fallback
+    assert _resolve_champion(table, "pickup_curve") == "pickup_curve"
+    # con columna: la columna MANDA (evidencia de la propia corrida)
+    table["is_champion"] = [False, True]
+    assert _resolve_champion(table, "pickup_curve") == "catboost"
+    # sin columna ni parámetro: nada destacado (reporte sin campeón)
+    assert _resolve_champion(
+        table.drop(columns=["is_champion"]), None
+    ) is None
+
+
+def test_panel_filas_vintage_y_revision_entre_corridas(tmp_path):
+    """El panel muestra el forecast publicado vs reales y el delta entre corridas."""
+    vintage = {
+        "n_obs": 78,
+        "window": {"start": "2026-10-07", "end": "2026-10-19"},
+        "global": {"wmape": 0.0935, "mape": 13.8, "bias": 0.0613, "n_obs": 78},
+        "interval_coverage": {"global": {"coverage": 0.91, "n_obs": 78, "nominal": 0.8}},
+        "detail_csv": "vintage_tracking_detail.csv",
+        "n_detail_rows": 78,
+    }
+    revision = {
+        "n_stays": 438, "previous_total": 50250.97, "current_total": 49787.23,
+        "delta": -463.74, "delta_pct": -0.009228495099677759,
+    }
+    out = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.122, "mape": 25.6, "bias": -0.007, "n_obs": 438},
+        champion="pickup_curve",
+        vintage_tracking=vintage,
+        forecast_revision=revision,
+    )
+    html = out.read_text(encoding="utf-8")
+    # fila vintage: valor, ventana y referencia al CSV de detalle
+    assert "Forecast publicado vs reales (vintage)" in html
+    assert "9.3% (n=78)" in html
+    assert "2026-10-07" in html and "2026-10-19" in html
+    assert "vintage_tracking_detail.csv" in html
+    assert "banda publicada cubrió 91%" in html
+    # fila revisión: delta con veredicto de estabilidad
+    assert "Revisión entre corridas" in html
+    assert "-0.9%" in html
+    assert "Estable" in html
+    assert "438 estancias comunes" in html
+
+
+def test_panel_filas_vintage_revision_ausentes_cuando_no_hay(tmp_path):
+    """Sin vintage ni revisión (primera corrida con registro): filas omitidas."""
+    out = generate_visual_report(
+        tmp_path, _forecast_df(),
+        metrics={"wmape": 0.15, "mape": 25.0, "bias": -0.02, "n_obs": 90},
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "Forecast publicado vs reales (vintage)" not in html
+    assert "Revisión entre corridas" not in html
 
 # --------------------------------------------------------------------------
 # cambio enhance-visual-report: secciones por propiedad

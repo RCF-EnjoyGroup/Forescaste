@@ -15,6 +15,7 @@ ANTERIOR al corte (`eval_frame`). Estos tests bloquean que:
 
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 from src.forecasting.run_real import per_property_backtest
 from src.forecasting.runner import run_end_to_end
@@ -129,6 +130,32 @@ def test_manifest_etiqueta_metrics_source_y_ventana(tmp_path):
     # documentación técnica: origen explícito de las métricas
     doc = result.deliverables["technical_documentation"].read_text(encoding="utf-8")
     assert "backtest real sobre la ventana ANTERIOR" in doc
+
+
+def test_reporte_futuro_documenta_cobertura_no_medible(tmp_path):
+    """Corrida futura: el panel de validación explica la cobertura como N/D.
+
+    La banda vive sobre el horizonte (sin reales), así que la fila de
+    cobertura del panel se presenta con su motivo — nunca se omite
+    silenciosamente (spec reporting: reporte auto-explicado).
+    """
+    dem, cap, pick = _sources()
+    result = run_end_to_end(
+        demand=dem,
+        capacity=cap,
+        pickup=pick,
+        run_dir=tmp_path / "futuro_reporte",
+        cutoff=pd.Timestamp("2026-05-31"),
+        actual=None,
+        eval_frame=_eval_frame(dem),
+        sample_data=False,
+    )
+    html = (Path(result.manifest_path).parent / "report.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Interpretación y validación" in html
+    assert "corrida futura" in html, "la cobertura N/D debe explicar el motivo"
+    assert "N/D" in html
 
 
 def test_kpis_accuracy_vienen_del_backtest(tmp_path):

@@ -42,6 +42,7 @@ class EngineConfig:
     pickup_curve: dict[str, Any] = field(default_factory=dict)
     holidays: dict[str, Any] = field(default_factory=dict)
     benchmark: dict[str, Any] = field(default_factory=dict)
+    monitoring: dict[str, Any] = field(default_factory=dict)
     log_level: str = "INFO"
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -137,6 +138,17 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         "n_folds": int(bench_cfg.get("n_folds", 4)),
     }
 
+    mon_cfg_raw = dict(data.get("monitoring") or {})
+    monitoring_cfg = {
+        "registry_path": str(mon_cfg_raw.get("registry_path") or ""),
+        "drift_current_window_days": int(
+            mon_cfg_raw.get("drift_current_window_days", 90)
+        ),
+        "psi_warning": float(mon_cfg_raw.get("psi_warning", 0.30)),
+        "psi_alert": float(mon_cfg_raw.get("psi_alert", 0.50)),
+        "bias_correction": dict(mon_cfg_raw.get("bias_correction") or {}),
+    }
+
     return EngineConfig(
         **values,
         sources=sources,
@@ -147,6 +159,7 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         pickup_curve=pickup_curve,
         holidays=holidays_cfg,
         benchmark=benchmark_cfg,
+        monitoring=monitoring_cfg,
         log_level=str(data.get("log_level", "INFO")),
         raw=data,
     )

@@ -10,7 +10,9 @@ from src.monitoring.drift import (
     check_metric_drift,
     check_pickup_curve_drift,
     classified_frame,
+    demand_drift_alerts,
     detect_outliers,
+    population_stability_index,
     run_drift_suite,
     should_retrain,
 )
@@ -297,3 +299,119 @@ def test_frecuencia_desconocida():
     )
     assert not d.should_retrain
     assert "desconocida" in d.reason
+
+
+# ----------------- drift de demanda YoY por propiedad (PSI) ----------------
+
+
+def _history_yoy(prop="corin", level_ref=50.0, level_cur=50.0, days=720, seed=7):
+    """Historial diario con la ventana YoY controlada por nivel."""
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range(end=pd.Timestamp("2026-09-30"), periods=days, freq="D")
+    vals = np.where(dates <= pd.Timestamp("2026-06-30"), level_ref, level_cur)
+    return pd.DataFrame({
+        "property": [prop] * days,
+        "stay_date": dates,
+        "room_nights": vals + rng.normal(0, 5, days),
+    })
+
+
+def test_psi_estable_cerca_de_cero():
+    rng = np.random.default_rng(3)
+    ref = pd.Series(rng.normal(50, 8, 400))
+    cur = pd.Series(rng.normal(50, 8, 400))
+    assert population_stability_index(cur, ref) < 0.10
+
+
+def test_psi_detecta_desplazamiento_de_nivel():
+    rng = np.random.default_rng(3)
+    ref = pd.Series(rng.normal(50, 8, 400))
+    cur = pd.Series(rng.normal(90, 8, 400))  # nivel +80%
+    assert population_stability_index(cur, ref) > 0.25
+
+
+def test_drift_yoy_estable_sin_alerta():
+    """Mismo nivel YoY → sin alertas (la referencia antigua disparaba SIEMPRE)."""
+    hist = _history_yoy()
+    alerts, skipped = demand_drift_alerts(hist, cutoff=pd.Timestamp("2026-09-30"))
+    assert alerts == [], f"demanda estable no debe alertar: {[a.message for a in alerts]}"
+    assert skipped == {}
+
+
+def test_drift_yoy_cambio_de_nivel_alerta_por_propiedad():
+    """Caída de nivel en la ventana actual → alerta accionable por propiedad."""
+    hist = _history_yoy(level_cur=25.0)
+    alerts, skipped = demand_drift_alerts(hist, cutoff=pd.Timestamp("2026-09-30"))
+    assert len(alerts) == 1
+    assert alerts[0].metric == "demand_psi:corin"
+    assert "corin" in alerts[0].message
+    assert alerts[0].severity in ("warning", "alert")
+
+
+def test_drift_yoy_propiedad_joven_sin_referencia():
+    """< 365d de histórico: sin ventana YoY → documentada, sin alerta."""
+    hist = _history_yoy(days=200)
+    alerts, skipped = demand_drift_alerts(hist, cutoff=pd.Timestamp("2026-09-30"))
+    assert alerts == []
+    assert "corin" in skipped
+    assert "365" in skipped["corin"]
+
+
+def test_drift_yoy_crecimiento_del_portafolio_no_alerta():
+    """El caso que rompía la referencia antigua: la propiedad creció de nivel
+    hace años, pero el nivel YoY es estable → sin alerta (no 22σ)."""
+    rng = np.random.default_rng(11)
+    days = 900
+    dates = pd.date_range(end=pd.Timestamp("2026-09-30"), periods=days, freq="D")
+    # nivel bajo 2024, salto estructural 2025, estable desde entonces
+    vals = np.where(dates < pd.Timestamp("2025-01-01"), 20.0, 80.0)
+    hist = pd.DataFrame({
+        "property": ["marina"] * days,
+        "stay_date": dates,
+        "room_nights": vals + rng.normal(0, 4, days),
+    })
+    alerts, _ = demand_drift_alerts(hist, cutoff=pd.Timestamp("2026-09-30"))
+    assert alerts == [], "salto estructural ANTERIOR al año de referencia no es drift"
+
+
+# ------------------- outliers con baseline local rodante ------------------
+
+
+def test_outlier_arranque_de_propiedad_no_es_evento():
+    """El arranque de baja demanda de una propiedad nueva NO es outlier.
+
+    Casa MARINA real: su enero 2023 (1-6 RN) quedaba flaggeado contra la
+    media 2023-26 de ~30 RN. Con baseline local, su propio arranque es su
+    entorno normal.
+    """
+    rng = np.random.default_rng(5)
+    dates = pd.date_range("2023-01-01", periods=1100, freq="D")
+    vals = np.concatenate([
+        3.0 + rng.normal(0, 1.0, 90),              # arranque bajo (ene-mar 2023)
+        30.0 + rng.normal(0, 4.0, 1010),           # régimen estable posterior
+    ])
+    hist = pd.DataFrame({
+        "property": ["marina"] * len(dates),
+        "stay_date": dates,
+        "room_nights": vals,
+        "capacity": [50.0] * len(dates),
+    })
+    outliers = detect_outliers(hist, threshold=3.0)
+    arranque = [o for o in outliers if pd.Timestamp(o.date) <= pd.Timestamp("2023-03-31")]
+    assert arranque == [], "el nivel propio del arranque no debe flaggearse"
+
+
+def test_outlier_pico_aislado_con_baseline_local_sigue_detectado():
+    rng = np.random.default_rng(6)
+    n = 400
+    vals = 50.0 + rng.normal(0, 4, n)
+    vals[200] = 95.0
+    hist = pd.DataFrame({
+        "property": ["corin"] * n,
+        "stay_date": pd.date_range("2026-01-01", periods=n),
+        "room_nights": vals,
+        "capacity": [100.0] * n,
+    })
+    outliers = detect_outliers(hist, threshold=3.0)
+    assert any(o.value == 95.0 for o in outliers)
+    assert all(o.removed is False for o in outliers)

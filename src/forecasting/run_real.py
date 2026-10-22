@@ -61,8 +61,10 @@ from src.forecasting.core import (
     _normalize_capacity,
     _normalize_demand,
     _normalize_pickup,
+    apply_bias_factors,
     build_forecasts,
     fit_candidate,
+    lead_bias_factors,
     predict_candidate,
 )
 from src.forecasting.runner import _dm_horizon_from_panel, run_end_to_end
@@ -286,6 +288,7 @@ def per_property_backtest(
     fold_metrics: pd.DataFrame | None = None,
     *,
     cap: pd.DataFrame | None = None,
+    fold_predictions: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Backtest por propiedad con el MISMO pipeline del runner (campeón opera).
 
@@ -298,6 +301,11 @@ def per_property_backtest(
     piso de reservas y techo de capacidad (``apply_capacity_constraint``):
     la métrica mide el forecast PUBLICADO, no una versión intermedia.
 
+    Con ``fold_predictions`` (de la selección as-of de ESA ventana) se
+    incluye también la corrección de bias por (propiedad, banda) del
+    pipeline publicado: la evaluación mide literalmente lo que se
+    publicaría, punto corregido incluido.
+
     Devuelve ``property, stay_date, lead_days, forecast, actual`` (+ el
     ``model_name`` que operó cada fila): en la corrida futura es la base de
     las métricas y desgloses (no hay reales en el horizonte futuro; nunca
@@ -308,10 +316,17 @@ def per_property_backtest(
     models = {p: "pickup_curve" for p in props}
     models.update({str(p): str(m) for p, m in (model_by_property or {}).items()})
 
-    raw, _, _ = build_forecasts(
+    raw, _, blend_bt = build_forecasts(
         models, dem, pick, c, int(horizon), curve_params, holiday_calendar,
         fold_metrics=fold_metrics,
     )
+    if fold_predictions is not None and len(fold_predictions) > 0:
+        # corrección de bias aprendida de los folds AS-OF de esta ventana
+        # (misma evidencia que habría visto la corrida operada entonces)
+        factors_bt, _ = lead_bias_factors(
+            fold_predictions, models, blend_bt, dem
+        )
+        raw = apply_bias_factors(raw, factors_bt)
 
     if cap is not None and not cap.empty:
         cap_daily = (
@@ -460,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
             f"[3/5] Backtest real T-{horizon}d — selección as-of {cutoff_eval.date()}, "
             "el campeón opera la evaluación..."
         )
-        folds_eval, error_panel_eval, _ = real_fold_metrics(
+        folds_eval, error_panel_eval, preds_eval = real_fold_metrics(
             dem, pick, cutoff_eval, horizon=fold_horizon, n_folds=n_folds,
             curve_params=curve_params, holiday_calendar=holiday_cal,
         )
@@ -491,7 +506,7 @@ def main(argv: list[str] | None = None) -> int:
         eval_bt = per_property_backtest(
             dem, pick, cutoff, horizon=horizon, curve_params=curve_params,
             holiday_calendar=holiday_cal, model_by_property=eval_models,
-            fold_metrics=folds_eval, cap=cap,
+            fold_metrics=folds_eval, cap=cap, fold_predictions=preds_eval,
         )
         if eval_bt.empty:
             print("ERROR: el backtest previo al corte no produjo observaciones reales.", file=sys.stderr)
@@ -505,6 +520,10 @@ def main(argv: list[str] | None = None) -> int:
         print("[3/5] Evaluación contra reales de la ventana del horizonte...")
 
     print("[4/5] Corrida end-to-end completa (campeón opera + backtest T-90..T-1)...")
+    # registro entre corridas: habilita drift de métricas vs la corrida
+    # anterior, re-entrenamiento con estado real, histéresis del campeón y
+    # tracking vintage del forecast publicado
+    registry_path = (cfg.monitoring or {}).get("registry_path") or None
     result = run_end_to_end(
         demand=demand_raw,
         # capacity crudo (post alias/exclusión): el gate de calidad ve la
@@ -524,6 +543,8 @@ def main(argv: list[str] | None = None) -> int:
         error_panel=error_panel,
         eval_frame=eval_frame,
         eval_models=eval_models,
+        registry_path=registry_path,
+        run_mode=run_kind,
     )
 
     checks = result.checks

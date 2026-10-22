@@ -86,10 +86,24 @@ def interval_coverage(
             row.update(_cover(work.loc[grp_flags.index], grp_flags))
             by_band.append(row)
 
+    # matriz (propiedad × banda): la celda exacta donde la banda está mal
+    # calibrada — el desglose marginal (solo propiedad, solo banda) puede
+    # promediar dos miscalibraciones opuestas
+    by_cell: list[dict] = []
+    if bands is not None:
+        for (prop, band), grp_flags in in_band.groupby(
+            [work[property_col], bands], observed=True
+        ):
+            row = {"property": str(prop), "lead_band": str(band)}
+            row.update(_cover(work.loc[grp_flags.index], grp_flags))
+            by_cell.append(row)
+        by_cell = sorted(by_cell, key=lambda r: (r["property"], r["lead_band"]))
+
     return {
         "global": _cover(work, in_band),
         "by_property": sorted(by_property, key=lambda r: r["property"]),
         "by_lead_band": sorted(by_band, key=lambda r: r["lead_band"]),
+        "by_property_lead_band": by_cell,
     }
 
 

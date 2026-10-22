@@ -74,17 +74,33 @@ from src.forecasting.core import (  # re-exportados para tests/CLI
     _normalize_demand,
     _normalize_pickup,
     _remaining_pickup_curves,
+    apply_bias_factors,
     build_forecasts,
     fit_candidate,
+    lead_bias_factors,
     operative_residual_bands,
     predict_candidate,
 )
+from src.monitoring.accuracy_tracking import (
+    forecast_revision,
+    load_published_forecast,
+    score_vintage,
+    vintage_detail,
+)
 from src.monitoring.drift import (
+    DriftAlert,
+    demand_drift_alerts,
     detect_outliers,
     run_drift_suite,
     should_retrain,
 )
 from src.monitoring.run_manifest import RunManifest
+from src.monitoring.run_registry import (
+    RunRecord,
+    append_record,
+    latest_record,
+    load_registry,
+)
 from src.reporting.benchmark import generate_deliverables, run_benchmark
 from src.reporting.visual_report import generate_visual_report
 from src.reporting.forecast_table import (
@@ -339,9 +355,29 @@ def _sampled_backtest(
 # --------------------------------------------------------------------------
 
 def _monitoring_block(
-    history: pd.DataFrame, metrics: dict[str, float], config: EngineConfig
+    history: pd.DataFrame,
+    metrics: dict[str, float],
+    config: EngineConfig,
+    *,
+    cutoff: pd.Timestamp,
+    metrics_source: str = "",
+    previous: dict[str, Any] | None = None,
+    coverage: dict[str, Any] | None = None,
 ) -> dict:
+    """Monitoreo con estado real del registro de corridas.
+
+    - Outliers con baseline LOCAL rodante (la media/σ de todo el histórico
+      flaggeaba el propio arranque de las propiedades).
+    - Drift de demanda POR PROPIEDAD contra la misma ventana YoY (PSI) —
+      la referencia "primera mitad del histórico" disparaba SIEMPRE.
+    - Drift de métricas (10.1) contra la corrida anterior registrada.
+    - Re-entrenamiento (10.4) con ``days_since_last``/``new_records``
+      reales del registro (antes: hardcodeado 0 y todo el histórico).
+    - Desviación de cobertura de banda por propiedad (P10–P90 nominal 80%).
+    """
     out: dict = {}
+    mon_cfg = dict(config.monitoring or {})
+
     try:
         outliers = detect_outliers(history, capacity_col=None)
         out["n_outliers"] = len(outliers)
@@ -351,36 +387,113 @@ def _monitoring_block(
     except Exception as exc:  # el monitoreo jamás rompe la corrida
         out["outliers_error"] = str(exc)
 
+    alerts: list[DriftAlert] = []
     try:
-        port = history.groupby("stay_date")["room_nights"].sum().sort_index()
-        if len(port) >= 30:
-            ref = port.iloc[: len(port) // 2]
-            cur = port.iloc[-90:]
-            alerts = run_drift_suite(
-                reference_metrics={},
-                current_metrics=_jsonable(metrics),
-                reference_demand=ref,
-                current_demand=cur,
-            )
-            out["n_drift_alerts"] = len(alerts)
-            out["drift_alerts"] = _jsonable([a.to_dict() for a in alerts])
-            out["drift_reference_note"] = (
-                "referencia de demanda: primera mitad del histórico; ventana actual: últimos 90d"
-            )
-    except Exception as exc:
+        demand_alerts, skipped = demand_drift_alerts(
+            history,
+            cutoff=cutoff,
+            current_window_days=int(mon_cfg.get("drift_current_window_days", 90)),
+            psi_warning=float(mon_cfg.get("psi_warning", 0.30)),
+            psi_alert=float(mon_cfg.get("psi_alert", 0.50)),
+        )
+        alerts.extend(demand_alerts)
+        out["drift_skipped_properties"] = _jsonable(skipped)
+        out["drift_reference_note"] = (
+            "referencia de drift: misma ventana calendario un año atrás "
+            "(YoY), por propiedad (PSI) — la primera mitad del histórico "
+            "incluía la era de 1-2 hoteles y disparaba en cada corrida"
+        )
+    except Exception as exc:  # pragma: no cover - guard defensivo
         out["drift_error"] = str(exc)
+
+    # 10.1 con estado: comparación REAL contra la corrida anterior registrada
+    # (solo con fuente de métricas comparable: verificación vs backtest
+    # inyectado miden ventanas distintas — manzanas vs naranjas)
+    previous = previous or {}
+    prev_metrics = previous.get("metrics") or {}
+    try:
+        if prev_metrics and str(previous.get("metrics_source", "")) == metrics_source:
+            alerts.extend(
+                run_drift_suite(
+                    reference_metrics=prev_metrics,
+                    current_metrics=_jsonable(metrics),
+                )
+            )
+            out["metric_drift_reference"] = {
+                "run_id": previous.get("run_id"),
+                "metrics_source": metrics_source,
+            }
+    except Exception as exc:  # pragma: no cover - guard defensivo
+        out["metric_drift_error"] = str(exc)
+
+    # cobertura de banda por propiedad: una banda honesta contiene el 80%
+    # nominal; la desviación por propiedad (CORIN 67%, VILLAS 93% en la
+    # corrida de verificación) se alerta como miscalibración
+    try:
+        if coverage:
+            nominal = float(
+                (coverage.get("global") or {}).get("nominal", 0.80)
+            )
+            for row in coverage.get("by_property") or []:
+                n = int(row.get("n_obs", 0))
+                cov = float(row.get("coverage", 0.0))
+                if n >= 30 and abs(cov - nominal) > 0.075:
+                    direction = "sub-cubre" if cov < nominal else "sobre-cubre"
+                    alerts.append(
+                        DriftAlert(
+                            metric=f"interval_coverage:{row.get('property')}",
+                            severity="warning",
+                            message=(
+                                f"Cobertura de banda en {row.get('property')}: "
+                                f"{cov:.1%} vs {nominal:.0%} nominal ({direction}, "
+                                f"n={n}) — banda mal calibrada"
+                            ),
+                            reference=nominal,
+                            current=cov,
+                        )
+                    )
+    except Exception as exc:  # pragma: no cover - guard defensivo
+        out["coverage_alert_error"] = str(exc)
+
+    out["n_drift_alerts"] = len(alerts)
+    out["drift_alerts"] = _jsonable([a.to_dict() for a in alerts])
 
     try:
         span_days = int(
             (history["stay_date"].max() - history["stay_date"].min()).days + 1
         )
+        # estado real del registro: cuánto tiempo desde el último
+        # entrenamiento y cuántos registros NUEVOS desde entonces
+        prev_ts = previous.get("timestamp")
+        prev_training_end = previous.get("training_end")
+        if prev_ts:
+            try:
+                days_since_last = int(
+                    (pd.Timestamp.now(tz="UTC") - pd.Timestamp(prev_ts)).days
+                )
+            except (ValueError, TypeError, OverflowError):
+                days_since_last = 0
+        else:
+            days_since_last = 0
+        if prev_training_end:
+            new_records = int(
+                (pd.to_datetime(history["stay_date"]) > pd.Timestamp(prev_training_end)).sum()
+            )
+        else:
+            new_records = int(len(history))
         decision = should_retrain(
             frequency=config.retrain_frequency,
-            new_records=int(len(history)),
-            days_since_last=0,  # esta corrida acaba de entrenar
+            new_records=new_records,
+            days_since_last=days_since_last,
             min_history_days=int(config.min_history_days),
             current_history_days=span_days,
         )
+        out["retraining_state"] = {
+            "days_since_last": days_since_last,
+            "new_records": new_records,
+            "has_previous_run": bool(prev_ts),
+            "previous_run_id": previous.get("run_id"),
+        }
         out["retraining_decision"] = _jsonable(decision.to_dict())
     except Exception as exc:
         out["retraining_error"] = str(exc)
@@ -489,6 +602,8 @@ def run_end_to_end(
     eval_frame: pd.DataFrame | None = None,
     eval_models: dict[str, str] | None = None,
     backtest_cfg: dict | None = None,
+    registry_path: str | Path | None = None,
+    run_mode: str = "ad hoc",
 ) -> E2EResult:
     """Ejecuta la cadena completa y verifica los criterios de aceptación.
 
@@ -518,6 +633,21 @@ def run_end_to_end(
     config = config or load_config()
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # registro entre corridas (estado real del monitoreo): sin ruta →
+    # corrida hermética sin estado (tests); con ruta → drift 10.1 contra la
+    # corrida anterior, histéresis del campeón y tracking vintage
+    previous_run: dict[str, Any] | None = None
+    previous_operational: dict[str, Any] | None = None
+    if registry_path is not None:
+        try:
+            registry = load_registry(registry_path)
+            previous_run = latest_record(registry)
+            previous_operational = latest_record(registry, mode="futuro")
+        except Exception as exc:  # el registro jamás rompe la corrida
+            print(f"[aviso] registro de corridas ilegible ({exc}); corrida sin estado")
+            previous_run = None
+            previous_operational = None
 
     # ---------- 1. detección de esquema + alias + calidad + GATE
     schemas = {
@@ -676,7 +806,13 @@ def run_end_to_end(
         )
         champion = benchmark.champion
         per_prop_sel = (
-            select_per_property(fold_metrics, global_champion=champion)
+            select_per_property(
+                fold_metrics,
+                global_champion=champion,
+                # histéresis: el incumbente de la corrida anterior se
+                # retiene salvo ventaja material (empates DM = ruido)
+                incumbent=(previous_run or {}).get("model_by_property"),
+            )
             if "property" in fold_metrics.columns
             else None
         )
@@ -701,6 +837,31 @@ def run_end_to_end(
         curve_params, holiday_cal,
         fold_metrics=fold_metrics,  # evidencia para el blend accuracy-aware
     )
+
+    # ---------- 5b. corrección de bias por (propiedad, banda de lead)
+    # El backtest operativo documenta sobre-pronóstico sistemático a leads
+    # largos (+23%/+30% en 60-90+): la corrección se aprende de los residuos
+    # del forecast operativo en los folds (shrinkage por tamaño de muestra)
+    # y se aplica al punto ANTES de piso/techo. Sin fold_predictions la
+    # corrección es vacía (corridas de muestra quedan idénticas).
+    bias_cfg = dict((config.monitoring or {}).get("bias_correction") or {})
+    bias_factors, bias_report = lead_bias_factors(
+        fold_predictions, model_by_property, blend_by_property, history,
+        min_obs=int(bias_cfg.get("min_obs", 20)),
+        shrinkage=int(bias_cfg.get("shrinkage", 30)),
+        max_rel=float(bias_cfg.get("max_rel", 0.30)),
+    )
+    raw = apply_bias_factors(raw, bias_factors)
+
+    # cold start: propiedades con < 365d de histórico (p. ej. apertura
+    # reciente) — forecast provisional, documentado en el manifiesto
+    first_stay = history.groupby("property")["stay_date"].min()
+    history_days = (pd.Timestamp(cutoff) - first_stay).dt.days + 1
+    cold_start_properties = {
+        str(p): f"{int(d)}d < 365d de histórico: forecast provisional"
+        for p, d in history_days.items()
+        if int(d) < 365
+    }
 
     # ---------- 6. capacidad + ocupación (por fecha; fallback mediana → 100)
     cap_daily = (
@@ -729,9 +890,13 @@ def run_end_to_end(
     # el pool del portafolio daba bandas identicas para hoteles de 54 y
     # 408 habitaciones (CORIN sobre-cubria 97-100%, FIESTA sub-cobria
     # 25-37%). Ensamblados de las predicciones que los folds ya
-    # computaron, sin re-entrenar nada.
+    # computaron, sin re-entrenar nada. Los residuos son los del forecast
+    # CORREGIDO (bias_factors): la banda calibra el pipeline completo que
+    # se publica — punto corregido + banda — con cuantiles completos del
+    # residuo (la cobertura nominal se garantiza sobre la calibración).
     operative_bands = operative_residual_bands(
         fold_predictions, model_by_property, blend_by_property, history,
+        bias_factors=bias_factors,
     )
     residuals_provided = bool(residual_bands) and len(residuals_flat) > 0
     if operative_bands:
@@ -906,8 +1071,52 @@ def run_end_to_end(
     kpis["n_properties_evaluated"] = float(len(evaluated_props))
     kpis["n_properties_portfolio"] = float(len(props))
 
+    # ---------- 10b. tracking vintage: el forecast publicado ANTERIOR se
+    # puntúa contra los reales materializados desde entonces (mide el
+    # artefacto que el negocio vio, no una simulación); y la revisión
+    # entre corridas (delta del forecast sobre estancias aún futuras)
+    vintage_tracking: dict | None = None
+    forecast_rev: dict | None = None
+    if previous_operational is not None:
+        try:
+            prev_fc = load_published_forecast(
+                str(previous_operational.get("run_dir") or "")
+            )
+            if prev_fc is not None:
+                vintage_tracking = score_vintage(
+                    prev_fc, dem, through=pd.Timestamp(dem["stay_date"].max())
+                )
+                forecast_rev = forecast_revision(forecast_final, prev_fc)
+                if forecast_rev is not None:
+                    kpis["forecast_vs_previous"] = float(forecast_rev["delta"])
+                    kpis["forecast_vs_previous_pct"] = float(
+                        forecast_rev["delta_pct"]
+                    )
+                # detalle forecast-vs-real por estancia (entregable CSV):
+                # cuánto se pronosticó (P50/banda, con lo reservado al
+                # publicar) vs lo que realmente llegó, estancia por estancia
+                detail = vintage_detail(
+                    prev_fc,
+                    dem,
+                    through=pd.Timestamp(dem["stay_date"].max()),
+                    published_run_id=str(previous_operational.get("run_id") or ""),
+                )
+                if not detail.empty:
+                    detail.to_csv(run_dir / "vintage_tracking_detail.csv", index=False)
+                    if vintage_tracking is not None:
+                        vintage_tracking["detail_csv"] = "vintage_tracking_detail.csv"
+                        vintage_tracking["n_detail_rows"] = int(len(detail))
+        except Exception as exc:  # el tracking jamás rompe la corrida
+            vintage_tracking = {"error": str(exc)}
+
     # ---------- 11. monitoring (outliers + drift + retraining)
-    monitoring = _monitoring_block(history, metrics, config)
+    monitoring = _monitoring_block(
+        history, metrics, config,
+        cutoff=pd.Timestamp(cutoff),
+        metrics_source=metrics_source,
+        previous=previous_run,
+        coverage=coverage,
+    )
 
     # ---------- 12. manifiesto (campeón coherente, JSON estricto)
     train_start = pd.Timestamp(history["stay_date"].min())
@@ -966,6 +1175,19 @@ def run_end_to_end(
             },
             "capacity_usage": "horizon_cap_only",
             "excluded_properties": _jsonable(excluded_props_map),
+            "cold_start_properties": _jsonable(cold_start_properties),
+            "bias_correction": _jsonable(bias_report),
+            "vintage_tracking": _jsonable(vintage_tracking),
+            "forecast_revision": _jsonable(forecast_rev),
+            "previous_run": (
+                {
+                    "run_id": previous_run.get("run_id"),
+                    "mode": previous_run.get("mode"),
+                    "timestamp": previous_run.get("timestamp"),
+                }
+                if previous_run
+                else None
+            ),
             "holiday_calendar": _jsonable(holiday_cal.describe()) if holiday_cal is not None else None,
             "events": (
                 {
@@ -984,6 +1206,41 @@ def run_end_to_end(
         },
     )
     manifest_path = manifest.write(run_dir)
+
+    # ---------- 12b. registro de estado entre corridas
+    # La SIGUIENTE corrida monitorea contra esta: drift de métricas (10.1),
+    # re-entrenamiento con días/nuevos-reales reales (10.4), histéresis del
+    # campeón por propiedad y tracking vintage del forecast publicado.
+    # El registro es append-only con escritura atómica y jamás rompe.
+    if registry_path is not None:
+        try:
+            coverage_compact = (
+                {
+                    "global": coverage.get("global"),
+                    "by_property": coverage.get("by_property"),
+                }
+                if coverage
+                else {}
+            )
+            append_record(
+                registry_path,
+                RunRecord(
+                    run_id=run_dir.name,
+                    run_dir=str(run_dir),
+                    mode=str(run_mode),
+                    timestamp=run_ts,
+                    cutoff=str(pd.Timestamp(cutoff).date()),
+                    training_end=str(pd.Timestamp(cutoff).date()),
+                    metrics=_jsonable(metrics) if metrics else {},
+                    metrics_source=str(metrics_source),
+                    champion=str(champion),
+                    model_by_property=dict(model_by_property),
+                    interval_coverage=_jsonable(coverage_compact),
+                    vintage_tracking=_jsonable(vintage_tracking) or {},
+                ),
+            )
+        except Exception as exc:  # pragma: no cover - guard defensivo
+            print(f"[aviso] no se pudo actualizar el registro de corridas: {exc}")
 
     # ---------- 13. entregables
     explain_df = _explain_forecast(fc_table, champion)
@@ -1052,6 +1309,10 @@ def run_end_to_end(
                 if holiday_cal is not None
                 else None
             ),
+            cold_start_properties=cold_start_properties,
+            bias_report=bias_report,
+            vintage_tracking=vintage_tracking,
+            forecast_revision=forecast_rev,
         ),
     )
 
@@ -1108,6 +1369,18 @@ def run_end_to_end(
             )
             if joined["actual"].notna().any():
                 actual_series = joined["actual"]
+        # corrida futura: la banda vive sobre el horizonte (sin reales) — la
+        # fila de cobertura del panel se presenta como N/D con el motivo,
+        # nunca se omite silenciosamente (spec reporting: auto-explicado)
+        coverage_for_report: dict | None = coverage
+        if coverage_for_report is None and eval_frame is not None:
+            coverage_for_report = {
+                "note": (
+                    "banda P10-P90 no disponible sobre la ventana evaluada "
+                    "(corrida futura: la banda se publica sobre el horizonte "
+                    "de pronóstico, que aún no tiene reales)"
+                )
+            }
         generate_visual_report(
             run_dir,
             forecast_final,
@@ -1121,6 +1394,19 @@ def run_end_to_end(
             model_by_property=model_by_property,
             backtest_report=backtest_report,
             champion=champion,
+            # panel de interpretación y validación (auto-explicado)
+            significance=benchmark.selection.significance,
+            interval_coverage=coverage_for_report,
+            cold_start=cold_start_properties,
+            drift_alerts=monitoring.get("drift_alerts"),
+            monitoring_state=monitoring.get("retraining_state"),
+            bias_correction=bias_report,
+            vintage_tracking=vintage_tracking,
+            forecast_revision=forecast_rev,
+            run_id=run_dir.name,
+            run_mode=(
+                str(run_mode) if str(run_mode) in ("real", "futuro") else None
+            ),
         )
     except Exception as exc:  # la vista jamás rompe la corrida
         print(f"[aviso] no se pudo generar report.html: {exc}")
@@ -1185,6 +1471,10 @@ def _technical_doc(
     excluded_props_map: dict[str, str] | None = None,
     curve_params: dict | None = None,
     holiday_calendar_md: str | None = None,
+    cold_start_properties: dict[str, str] | None = None,
+    bias_report: dict | None = None,
+    vintage_tracking: dict | None = None,
+    forecast_revision: dict | None = None,
 ) -> str:
     disclaimer = (
         "> ⚠️ **DISCLAIMER**: corrida ejecutada con datos de MUESTRA en el esquema real "
@@ -1246,9 +1536,16 @@ def _technical_doc(
         else "**PLACEHOLDER sintético**: sin folds reales inyectados"
     )
     interval_note = (
-        "residuos del backtest T-90..T-1 por banda de lead"
-        if interval_source == "real_backtest"
-        else "residuos sintéticos de reemplazo (etiquetados en el manifiesto)"
+        "residuos del forecast operativo por (propiedad × banda de lead) de los "
+        "folds del benchmark, corregidos por bias; cuantiles COMPLETOS del residuo "
+        "(calibración conformal: la banda contiene el 80% nominal de la muestra "
+        "de calibración por construcción)"
+        if interval_source == "operative_fold_residuals"
+        else (
+            "residuos del backtest T-90..T-1 por banda de lead (cuantiles completos)"
+            if interval_source == "real_backtest"
+            else "residuos sintéticos de reemplazo (etiquetados en el manifiesto)"
+        )
     )
     if interval_coverage is not None:
         g = interval_coverage.get("global", {})
@@ -1256,14 +1553,83 @@ def _technical_doc(
         n_cov = int(g.get("n_obs", 0))
         coverage_md = (
             f"- Cobertura empírica en la ventana evaluada: {cov_pct:.1f}% "
-            f"(nominal 80%, n={n_cov}) — desglose por propiedad y banda de lead "
-            "en `interval_coverage` del accuracy report.\n"
+            f"(nominal 80%, n={n_cov}) — desglose por propiedad, banda de lead "
+            "y celda (propiedad × banda) en `interval_coverage` del accuracy "
+            "report; la desviación por propiedad se alerta en el monitoreo.\n"
         )
     else:
         coverage_md = (
             "- Cobertura empírica: no medible en esta corrida (la banda vive sobre "
             "el horizonte de pronóstico, que aún no tiene reales).\n"
         )
+    cold_start_md = (
+        "- **Cold start (provisional)**: "
+        + (
+            "; ".join(f"{p} ({why})" for p, why in sorted(cold_start_properties.items()))
+            + " — su forecast es provisional y se excluye de decisiones de "
+            "planeación hasta acumular ≥ 365d de histórico.\n"
+            if cold_start_properties
+            else "ninguna propiedad con < 365d de histórico.\n"
+        )
+    )
+    bias_md = (
+        "- **Corrección de bias por (propiedad, banda de lead)**: aprendida de los "
+        "residuos del forecast operativo en los folds (sobre-pronóstico documentado "
+        "de +23%/+30% a leads 60–90+), con shrinkage por tamaño de muestra y clip "
+        "±30%; se aplica al punto ANTES del piso de reservas y el techo de "
+        "capacidad. Detalle por celda en el manifiesto (`bias_correction`): "
+        + (
+            f"{int(bias_report.get('n_corrected', 0))} de "
+            f"{int(bias_report.get('n_cells', 0))} celdas corregidas."
+            if bias_report
+            else "sin folds de evidencia (sin corrección)."
+        )
+        + "\n"
+    )
+    if vintage_tracking:
+        vg = vintage_tracking.get("global") or {}
+        vintage_md = (
+            "- **Tracking vintage**: el forecast publicado por la corrida anterior "
+            "se puntuó contra los reales materializados "
+            + (
+                f"(WMAPE {float(vg.get('wmape', float('nan'))):.4f} sobre "
+                f"{int(vintage_tracking.get('n_obs', 0))} obs; detalle por banda y "
+                "cobertura de banda por vintage en `vintage_tracking` del manifiesto"
+                + (
+                    f"; detalle por estancia — publicado vs real, error y banda — en "
+                    f"`{vintage_tracking.get('detail_csv')}` "
+                    f"({int(vintage_tracking.get('n_detail_rows', 0))} filas)"
+                    if vintage_tracking.get("detail_csv")
+                    else ""
+                )
+                + ").\n"
+                if vg
+                else "(sin estancias materializadas aún).\n"
+            )
+        )
+    else:
+        vintage_md = (
+            "- **Tracking vintage**: sin forecast operativo (modo `futuro`) previo "
+            "registrado, o sin estancias de ese forecast materializadas aún — se "
+            "activa en cuanto exista una corrida futura previa con reales.\n"
+        )
+    if forecast_revision:
+        revision_md = (
+            f"- **Revisión vs corrida anterior**: {float(forecast_revision['delta']):+.0f} RN "
+            f"({float(forecast_revision['delta_pct']):+.1%}) sobre "
+            f"{int(forecast_revision['n_stays'])} estancias comunes aún futuras "
+            "(`forecast_revision` en el manifiesto).\n"
+        )
+    else:
+        revision_md = ""
+    monitoring_md = (
+        "- **Monitoreo con estado**: drift de demanda por propiedad contra la misma "
+        "ventana YoY (PSI — la referencia 'primera mitad del histórico' disparaba "
+        "en cada corrida por el crecimiento del portafolio), drift de métricas "
+        "contra la corrida anterior registrada y política de re-entrenamiento con "
+        "días/nuevos-reales reales del registro. La selección por propiedad "
+        "retiene al incumbente salvo ventaja material (histéresis anti-churn).\n"
+    )
     return f"""# Documentación técnica — Room Nights Forecasting Engine
 
 {disclaimer}
@@ -1300,14 +1666,21 @@ Detección automática de esquema (sin asumir nombres de columna).
 - Anclados al punto publicado (`p50 = final_forecast_rn`), capados a capacidad.
 - Calibración: {interval_note}.
 {coverage_md}
+## Monitoreo y operación
+{monitoring_md}{bias_md}{vintage_md}{revision_md}{cold_start_md}
 ## Limitaciones del modelo
 1. Sin datos externos: clima, competencia y eventos propietarios fuera de alcance.
 2. ETS/SARIMAX se entrenan sobre series posicionales: con huecos severos el paso
    temporal se aproxima; los candidatos ML usan features calendario exactas.
-3. La banda de un lead con pocos residuos observados hereda el pool global
-   (fallback documentado con `min_residuals`).
-4. Cold start: propiedades con < 60 días de histórico usan guard de nivel reciente.
+3. La banda de un lead con pocos residuos observados hereda la escalera de pools
+   ((propiedad, banda) → propiedad → banda → global, documentada con
+   `min_residuals`).
+4. Cold start: propiedades con < 60 días de histórico usan guard de nivel
+   reciente; con < 365d se publican como **provisionales** (ver arriba).
 5. Revenue (`RN × ADR`) queda fuera de esta versión.
 6. Granularidad `Property × Stay Date`; dimensiones más finas solo si las fuentes
    las soportan de forma consistente.
+7. La corrección de bias y la banda se calibran con la evidencia de folds
+   disponible; un cambio de régimen posterior al corte solo lo detecta el
+   monitoreo (drift YoY por propiedad y tracking vintage), no la calibración.
 """
