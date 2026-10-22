@@ -1403,6 +1403,16 @@ def run_end_to_end(
             bias_correction=bias_report,
             vintage_tracking=vintage_tracking,
             forecast_revision=forecast_rev,
+            lead_band_breakdown=(
+                breakdowns.get("lead_band").to_dict("records")
+                if breakdowns.get("lead_band") is not None
+                and not breakdowns["lead_band"].empty
+                else None
+            ),
+            benchmark_bands=dict(config.monitoring or {}).get("benchmark_bands"),
+            tracking_signal_alert=float(
+                dict(config.monitoring or {}).get("tracking_signal_alert", 4.0)
+            ),
             run_id=run_dir.name,
             run_mode=(
                 str(run_mode) if str(run_mode) in ("real", "futuro") else None

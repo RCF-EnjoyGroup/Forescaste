@@ -102,6 +102,21 @@ monitoring:
     min_obs: 20
     shrinkage: 30
     max_rel: 0.30
+  # Bandas de referencia de la INDUSTRIA para juzgar el WMAPE por horizonte
+  # (perfil resort/estacional del portafolio). Fuente: HospitalityOS,
+  # "Hotel Forecast Accuracy Benchmarking" (2026-09), compilado de
+  # Hospitality Net / Lighthouse / Cloudbeds: 7d < 7% · 30d 12-18% con
+  # acción > 22% · 90d 18-25%. Cada horizonte: (en_banda, ajustar_desde,
+  # deteriorado_desde) — en banda = WMAPE del grupo por debajo del primer
+  # umbral. Calibrable sin tocar código si el perfil del portafolio cambia.
+  benchmark_bands:
+    short: [0.07, 0.12]   # leads 1-7d
+    mid: [0.18, 0.22]     # leads 8-30d
+    long: [0.25, 0.30]    # leads 31-90d
+  # Tracking signal del forecast publicado (Σ error con signo / desviación
+  # media): umbral clásico de control |TS| <= 4 — detecta sesgo sistemático
+  # acumulado que el MAPE (sin signo) esconde
+  tracking_signal_alert: 4.0
 
 # Calendario de feriados (fuente confiable: librería `holidays`): CR (Semana
 # Santa, Anexión, Día de la Madre, Independencia…) + mercados emisores US

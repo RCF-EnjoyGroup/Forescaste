@@ -132,13 +132,13 @@ lámparas de veredicto — imprimible y presentable.
 
 **Guía de lectura embebida:**
 - **Interpretación y validación** (primera tarjeta): tabla de veredictos por
-  métrica — WMAPE, bias, cobertura de banda (vs 80% nominal), convergencia
-  del error, significancia del campeón (DM), cold start, drift YoY y estado
-  del registro — cada una con su **criterio explícito** ("< 15% bien · 15-25%
-  revisar · > 25% deteriorado") y su veredicto ✅/🟡/❌. Además, cuando el
-  registro lo permite: **forecast publicado vs reales (vintage)** — el
-  pronóstico de la corrida anterior puntuado contra los reales ya
-  materializados, con la cobertura de la banda que se publicó — y
+  métrica — WMAPE, bias, **precisión por horizonte contra bandas de la
+  industria** (corto ≤6d <7% · medio 7-29d <18% · largo 30d+ <25%, perfil
+  resort/estacional configurable en `monitoring.benchmark_bands`; estándar
+  operativo HospitalityOS 2026), cobertura de banda (vs 80% nominal),
+  convergencia del error, significancia del campeón (DM), cold start, drift
+  YoY, estado del registro, **forecast publicado vs reales (vintage)** con
+  la **señal de rastreo por propiedad** (|TS| ≤ 4 en control) y
   **revisión entre corridas** (delta del forecast sobre estancias comunes
   aún futuras)
 - **Glosario rápido** (última tarjeta): WMAPE, MAPE, bias, lead days, P10/P50/P90, fold
@@ -196,7 +196,7 @@ src/
 ├── explainability/      # importancia de features + SHAP
 ├── monitoring/          # drift YoY, outliers, re-entrenamiento, registro entre corridas, tracking vintage, manifiesto
 └── reporting/           # benchmark, tabla de forecast, KPIs, dataset Power BI, entregables
-tests/                   # 399 tests
+tests/                   # 406 tests
 openspec/                # specs, propuestas y changelog del proyecto
 ```
 
@@ -284,7 +284,9 @@ openspec/                # specs, propuestas y changelog del proyecto
   por la corrida anterior se puntúa contra los reales materializados
   (por vintage y banda de lead, con su cobertura de banda) y la revisión
   entre corridas (delta sobre estancias comunes) se publica en los KPIs
-  (`forecast_vs_previous`).
+  (`forecast_vs_previous`). La **señal de rastreo por propiedad**
+  (Σ error con signo ÷ desviación media, umbral clásico |TS| ≤ 4)
+  controla el sesgo sistemático acumulado que el MAPE esconde.
 - **Cold start declarado**: propiedades con < 365d de histórico se
   publican como **provisionales** (manifiesto `cold_start_properties` y
   documentación técnica); el forecast no las oculta, las etiqueta.
@@ -298,7 +300,7 @@ openspec/                # specs, propuestas y changelog del proyecto
 ## Tests
 
 ```bash
-python -m pytest -q          # 399 tests
+python -m pytest -q          # 406 tests
 ```
 
 Cobren la cadena completa (e2e), esquema alternativo, as-of/leakage,

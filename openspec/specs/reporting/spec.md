@@ -122,8 +122,9 @@ El reporte HTML SHALL ser legible sin conocimiento previo del motor: cada secci�
 #### Scenario: Panel de interpretación y validación
 - **WHEN** la corrida tiene métricas
 - **THEN** el panel muestra WMAPE, bias, cobertura de banda (contra el 80% nominal), convergencia del error (lead 1-2 vs 60-89), significancia del campeón (Diebold-Mariano), cold start, drift YoY y estado del registro entre corridas
-- **THEN** con tracking vintage disponible: el forecast publicado de la corrida anterior contra los reales materializados (con la cobertura de la banda publicada y la referencia al CSV de detalle)
+- **THEN** con tracking vintage disponible: el forecast publicado de la corrida anterior contra los reales materializados (con la cobertura de la banda publicada y la referencia al CSV de detalle) y la señal de rastreo POR PROPIEDAD de la añada con su criterio
 - **THEN** con revisión entre corridas: el delta del forecast sobre estancias comunes aún futuras (|Δ| ≤ 5% estable)
+- **THEN** la precisión se juzga por horizonte — corto (≤6d), medio (7-29d), largo (30d+) — contra bandas de la INDUSTRIA configurables (perfil resort/estacional por defecto), con pooling ponderado por volumen entre las bandas de lead del grupo; el WMAPE de ventana declara que mezcla horizontes
 - **THEN** cada fila declara el criterio con el que se juzga (p. ej. «|sesgo| < 5% calibrado · < 10% visible · > 10% fuerte») y un veredicto visual
 - **WHEN** una métrica no es medible en el modo de corrida (p. ej. cobertura en corrida futura)
 - **THEN** la fila se presenta como N/D con el motivo, nunca se omite silenciosamente

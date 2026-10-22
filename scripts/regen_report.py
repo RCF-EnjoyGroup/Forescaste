@@ -23,6 +23,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from src.config import load_config
 from src.reporting.visual_report import generate_visual_report  # noqa: E402
 
 
@@ -112,6 +113,27 @@ def main(run_dir: str) -> int:
             vintage["detail_csv"] = detail_path.name
             with open(detail_path, encoding="utf-8") as fh:
                 vintage["n_detail_rows"] = sum(1 for _ in fh) - 1
+    # retro-inyección de la tracking signal: manifestos previos a la mejora
+    # no la traen, pero el CSV de detalle permite recomputarla EXACTA
+    # (por propiedad — el control que la industria usa por departamento)
+    if vintage and vintage.get("global") and "by_property" not in vintage:
+        detail_path = run_dir / "vintage_tracking_detail.csv"
+        if detail_path.exists():
+            det = pd.read_csv(detail_path)
+            filas = []
+            for prop, grp in det.groupby("property"):
+                e = grp["error_rn"].to_numpy(dtype=float)
+                mad_p = float(abs(e).mean()) if len(e) else 0.0
+                filas.append({
+                    "property": prop,
+                    "n_obs": int(len(grp)),
+                    "tracking_signal": float(e.sum() / mad_p) if mad_p > 0 else 0.0,
+                })
+            if filas:
+                vintage["by_property"] = sorted(
+                    filas, key=lambda r: abs(r["tracking_signal"]), reverse=True
+                )
+    cfg_monitoring = dict((load_config().monitoring or {}))
     out = generate_visual_report(
         run_dir,
         forecast,
@@ -140,6 +162,9 @@ def main(run_dir: str) -> int:
         bias_correction=man.get("bias_correction") or None,
         vintage_tracking=vintage,
         forecast_revision=man.get("forecast_revision") or None,
+        lead_band_breakdown=acc.get("by_lead_band") or None,
+        benchmark_bands=cfg_monitoring.get("benchmark_bands"),
+        tracking_signal_alert=float(cfg_monitoring.get("tracking_signal_alert", 4.0)),
         run_id=run_dir.name,
         run_mode=(
             "futuro" if run_dir.name.startswith("futuro")

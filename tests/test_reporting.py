@@ -606,6 +606,115 @@ def test_panel_filas_vintage_revision_ausentes_cuando_no_hay(tmp_path):
     assert "Forecast publicado vs reales (vintage)" not in html
     assert "Revisión entre corridas" not in html
 
+
+def _lead_band_breakdown():
+    return [
+        {"lead_band": "1-2", "wmape": 0.03, "mae": 1.0, "n_obs": 12},
+        {"lead_band": "3-6", "wmape": 0.05, "mae": 1.5, "n_obs": 24},
+        {"lead_band": "7-13", "wmape": 0.12, "mae": 4.0, "n_obs": 42},
+        {"lead_band": "14-29", "wmape": 0.17, "mae": 11.0, "n_obs": 96},
+        {"lead_band": "30-59", "wmape": 0.18, "mae": 15.0, "n_obs": 180},
+        {"lead_band": "60-89", "wmape": 0.16, "mae": 16.0, "n_obs": 162},
+    ]
+
+
+def test_panel_benchmark_bands_por_horizonte(tmp_path):
+    """El WMAPE se juzga por horizonte contra la banda de industria (pooling honesto)."""
+    out = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.13, "mape": 22.0, "bias": -0.03, "n_obs": 540},
+        lead_band_breakdown=_lead_band_breakdown(),
+        benchmark_bands={"short": [0.07, 0.12], "mid": [0.18, 0.22], "long": [0.25, 0.30]},
+    )
+    html = out.read_text(encoding="utf-8")
+    # tres grupos con su pooled exacto: corto 48/1120=4.3%, medio 1224/7612=16.1%,
+    # largo 5292/31200=17.0% → todos "En banda"
+    assert "WMAPE corto (≤6d) vs banda industria" in html
+    assert "WMAPE medio (7-29d) vs banda industria" in html
+    assert "WMAPE largo (30d+) vs banda industria" in html
+    assert html.count("En banda") >= 3
+    assert "4.3%" in html and "16.1%" in html and "17.0%" in html
+    assert "banda resort" in html and "HospitalityOS" in html
+    # la fila de ventana declara que mezcla horizontes
+    assert "mezcla horizontes" in html
+
+
+def test_panel_benchmark_band_deteriorada_marca(tmp_path):
+    """Un horizonte fuera de banda se ve inmediatamente."""
+    rows = _lead_band_breakdown()
+    for r in rows:
+        if r["lead_band"] == "1-2":
+            r["wmape"], r["mae"], r["n_obs"] = 0.35, 9.0, 40
+        if r["lead_band"] == "3-6":
+            r["wmape"], r["mae"], r["n_obs"] = 0.30, 8.0, 40
+    out = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.16, "mape": 25.0, "bias": -0.04, "n_obs": 540},
+        lead_band_breakdown=rows,
+        benchmark_bands={"short": [0.07, 0.12], "mid": [0.18, 0.22], "long": [0.25, 0.30]},
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "Deteriorado" in html
+
+
+def test_panel_tracking_signal_fila_con_veredicto(tmp_path):
+    """La TS por propiedad de la añada aparece con el criterio |TS| ≤ 4."""
+    vintage = {
+        "n_obs": 78,
+        "window": {"start": "2026-10-07", "end": "2026-10-19"},
+        "global": {"wmape": 0.09, "mape": 13.8, "bias": 0.06,
+                   "n_obs": 78, "tracking_signal": 5.2},
+        "by_property": [
+            {"property": "FIESTA", "n_obs": 13, "wmape": 0.084, "bias": 0.079,
+             "tracking_signal": 12.3},
+            {"property": "CORIN", "n_obs": 13, "wmape": 0.066, "bias": -0.032,
+             "tracking_signal": -6.1},
+            {"property": "MARINA", "n_obs": 13, "wmape": 0.103, "bias": 0.043,
+             "tracking_signal": 2.9},
+        ],
+        "interval_coverage": {"global": {"coverage": 0.91, "n_obs": 78, "nominal": 0.8}},
+    }
+    out = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.13, "mape": 22.0, "bias": -0.03, "n_obs": 540},
+        vintage_tracking=vintage,
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "Tracking signal por propiedad (añada)" in html
+    assert "+12.3 (FIESTA" in html, "la peor TS encabeza la fila"
+    assert "Fuera de control" in html, "FIESTA >8 → fuera"
+    assert "FIESTA +12.3" in html and "MARINA +2.9" in html, "el detalle por hotel"
+    assert "el MAPE esconde" in html
+
+
+def test_panel_tracking_signal_en_control(tmp_path):
+    vintage = {
+        "n_obs": 78,
+        "window": {"start": "2026-10-07", "end": "2026-10-19"},
+        "global": {"wmape": 0.09, "mape": 13.8, "bias": 0.01,
+                   "n_obs": 78, "tracking_signal": 1.8},
+        "by_property": [
+            {"property": "CORIN", "n_obs": 13, "wmape": 0.06, "bias": -0.02,
+             "tracking_signal": -1.9},
+            {"property": "MARINA", "n_obs": 13, "wmape": 0.10, "bias": 0.03,
+             "tracking_signal": 2.1},
+        ],
+    }
+    out = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.13, "mape": 22.0, "bias": -0.03, "n_obs": 540},
+        vintage_tracking=vintage,
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "En control" in html
+    # manifestos viejos sin by_property: la fila simplemente no aparece
+    out_viejo = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.13, "mape": 22.0, "bias": -0.03, "n_obs": 540},
+        vintage_tracking={"global": {"wmape": 0.09, "n_obs": 78}, "n_obs": 78},
+    )
+    assert "Tracking signal" not in out_viejo.read_text(encoding="utf-8")
+
 # --------------------------------------------------------------------------
 # cambio enhance-visual-report: secciones por propiedad
 # --------------------------------------------------------------------------

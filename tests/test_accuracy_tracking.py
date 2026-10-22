@@ -180,3 +180,67 @@ def test_vintage_detalle_sin_materializados_devuelve_vacio():
         published, actuals, through=pd.Timestamp("2026-10-05")
     )
     assert detail.empty, "sin estancias materializadas el detalle va vacío, nunca inventado"
+
+
+# ------------------------------------------------- tracking signal (añada)
+
+
+def _published_flat(n=20, forecast=30.0):
+    cutoff = pd.Timestamp("2026-10-06")
+    dates = pd.date_range(cutoff + pd.Timedelta(days=1), periods=n)
+    return pd.DataFrame({
+        "property": ["corin"] * n,
+        "stay_date": dates,
+        "forecast_date": cutoff,
+        "lead_days": list(range(1, n + 1)),
+        "final_forecast_rn": [forecast] * n,
+        "p50_forecast": [forecast] * n,
+        "p10_forecast": [forecast - 5.0] * n,
+        "p90_forecast": [forecast + 5.0] * n,
+    })
+
+
+def test_tracking_signal_simetrica_cerca_de_cero():
+    """Errores simétricos alrededor del punto → TS ≈ 0 (sin sesgo sistemático)."""
+    from src.monitoring.accuracy_tracking import score_vintage
+
+    published = _published_flat(n=20, forecast=30.0)
+    dates = published["stay_date"]
+    # alternando 29 y 31: errores +1/−1 simétricos
+    actuals = pd.DataFrame({
+        "property": ["corin"] * len(dates),
+        "stay_date": dates,
+        "room_nights": [29.0 if i % 2 == 0 else 31.0 for i in range(len(dates))],
+    })
+    report = score_vintage(published, actuals, through=dates.max())
+    ts = report["global"]["tracking_signal"]
+    assert abs(ts) < 0.5, f"errores simétricos → TS≈0, obtuve {ts}"
+
+
+def test_tracking_signal_unidireccional_alta():
+    """Errar consistente en UNA dirección → TS alta (el patrón que el MAPE esconde)."""
+    from src.monitoring.accuracy_tracking import score_vintage
+
+    published = _published_flat(n=20, forecast=30.0)
+    dates = published["stay_date"]
+    actuals = pd.DataFrame({
+        "property": ["corin"] * len(dates),
+        "stay_date": dates,
+        "room_nights": [27.0] * len(dates),  # siempre +3 de error
+    })
+    report = score_vintage(published, actuals, through=dates.max())
+    ts = report["global"]["tracking_signal"]
+    assert ts > 4.0, f"sesgo sostenido +3 RN en 20 estancias → TS>4, obtuve {ts}"
+    assert report["global"]["wmape"] == pytest.approx(60.0 / 540.0)  # 3/27
+
+
+def test_tracking_signal_ausente_sin_vintage():
+    from src.monitoring.accuracy_tracking import score_vintage
+
+    published = _published_flat(n=5)
+    actuals = pd.DataFrame({
+        "property": ["corin"] * 3,
+        "stay_date": published["stay_date"].iloc[:3],
+        "room_nights": [30.0, 30.0, 30.0],
+    })
+    assert score_vintage(published, actuals, through=pd.Timestamp("2026-10-05")) is None

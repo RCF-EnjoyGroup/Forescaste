@@ -289,6 +289,9 @@ def _validation_panel(
     bias_correction: dict | None,
     vintage_tracking: dict | None = None,
     forecast_revision: dict | None = None,
+    lead_band_breakdown: list[dict] | None = None,
+    benchmark_bands: dict | None = None,
+    tracking_signal_alert: float | None = None,
 ) -> str:
     """Tabla de veredictos: métrica | valor | criterio | lectura.
 
@@ -320,10 +323,55 @@ def _validation_panel(
                 )
         _row(
             "WMAPE (ventana)", f"{w:.1%}",
-            "< 15% bien · 15–25% revisar · > 25% deteriorado"
-            + folds_note,
+            "mezcla horizontes (el desglose contra banda industria va por "
+            "grupo, abajo)" + folds_note,
             nivel,
         )
+
+    # --- Precisión por horizonte contra banda de la INDUSTRIA (resort)
+    # El pooling entre bandas del grupo es honesto: Σ|e| = Σ(mae·n) y
+    # Σ|actual| = Σ(mae·n)/wmape → WMAPE del grupo ponderado por volumen.
+    if lead_band_breakdown and benchmark_bands:
+        grupos: list[tuple[str, tuple[str, ...], str]] = [
+            ("corto (≤6d)", ("1-2", "3-6"), "short"),
+            ("medio (7-29d)", ("7-13", "14-29"), "mid"),
+            ("largo (30d+)", ("30-59", "60-89", "90+"), "long"),
+        ]
+        by_band = {
+            str(r.get("lead_band")): r for r in lead_band_breakdown
+            if r.get("wmape") is not None
+        }
+        for label, bandas, key in grupos:
+            rows_grp = [by_band[b] for b in bandas if b in by_band]
+            if not rows_grp:
+                continue
+            abs_err = sum(
+                float(r["mae"]) * int(r.get("n_obs", 0)) for r in rows_grp
+            )
+            denom = sum(
+                float(r["mae"]) * int(r.get("n_obs", 0)) / max(float(r["wmape"]), 1e-9)
+                for r in rows_grp
+            )
+            n_grp = sum(int(r.get("n_obs", 0)) for r in rows_grp)
+            if denom <= 0 or n_grp < 10:
+                continue
+            w_grp = abs_err / denom
+            banda = benchmark_bands.get(key) or [0.25, 0.30]
+            ok_hasta, deteriorado_desde = float(banda[0]), float(banda[1])
+            nivel = (
+                _chip("ok", "En banda") if w_grp < ok_hasta
+                else (_chip("warn", "Ajustar") if w_grp < deteriorado_desde
+                      else _chip("bad", "Deteriorado"))
+            )
+            _row(
+                f"WMAPE {label} vs banda industria",
+                f"{w_grp:.1%} (n={n_grp})",
+                f"banda resort: < {ok_hasta:.0%} en banda · "
+                f"{ok_hasta:.0%}-{deteriorado_desde:.0%} ajustar · "
+                f"> {deteriorado_desde:.0%} deteriorado (estándar operativo "
+                "HospitalityOS 2026, perfil estacional)",
+                nivel,
+            )
 
     # --- Bias
     if metrics and "bias" in metrics:
@@ -466,6 +514,39 @@ def _validation_panel(
             f"el forecast publicado por la corrida anterior, puntuado contra los "
             f"reales ya materializados ({window.get('start', '—')} → "
             f"{window.get('end', '—')}); WMAPE < 15% bien · 15–25% revisar{extra}{detalle}",
+            nivel,
+        )
+
+    # --- Tracking signal del forecast publicado (control de sesgo acumulado)
+    # POR PROPIEDAD (control de cada hotel sobre la añada, como el scorecard
+    # de la industria por departamento): la TS global escala con n y no
+    # discrimina; la de cada propiedad sí.
+    ts_threshold = float(tracking_signal_alert or 4.0)
+    ts_rows = (vintage_tracking or {}).get("by_property") or []
+    ts_rows = [r for r in ts_rows if r.get("tracking_signal") is not None]
+    if ts_rows:
+        peor = ts_rows[0]
+        fuera = [r for r in ts_rows if abs(float(r["tracking_signal"])) > 2 * ts_threshold]
+        sesgo = [
+            r for r in ts_rows
+            if ts_threshold < abs(float(r["tracking_signal"])) <= 2 * ts_threshold
+        ]
+        detalle = " · ".join(
+            f"{r['property']} {float(r['tracking_signal']):+.1f}" for r in ts_rows
+        )
+        if fuera:
+            nivel = _chip("bad", "Fuera de control")
+        elif sesgo:
+            nivel = _chip("warn", "Sesgo acumulado")
+        else:
+            nivel = _chip("ok", "En control")
+        _row(
+            "Tracking signal por propiedad (añada)",
+            f"{float(peor['tracking_signal']):+.1f} ({peor['property']}, la peor)",
+            f"|TS| ≤ {ts_threshold:.0f} en control — error con signo acumulado ÷ "
+            "desviación media por hotel; crece cuando una propiedad yerra "
+            f"consistente en UNA dirección (el patrón que el MAPE esconde). "
+            f"{detalle}",
             nivel,
         )
 
@@ -1088,6 +1169,9 @@ def generate_visual_report(
     bias_correction: dict | None = None,
     vintage_tracking: dict | None = None,
     forecast_revision: dict | None = None,
+    lead_band_breakdown: list[dict] | None = None,
+    benchmark_bands: dict | None = None,
+    tracking_signal_alert: float | None = None,
     run_id: str | None = None,
     run_mode: str | None = None,
     title: str = "Room Nights Forecast Engine",
@@ -1157,6 +1241,9 @@ def generate_visual_report(
         bias_correction=bias_correction,
         vintage_tracking=vintage_tracking,
         forecast_revision=forecast_revision,
+        lead_band_breakdown=lead_band_breakdown,
+        benchmark_bands=benchmark_bands,
+        tracking_signal_alert=tracking_signal_alert,
     )
 
     # ---- precisión: cómo de bien pronostica el motor

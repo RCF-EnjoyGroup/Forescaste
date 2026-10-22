@@ -139,6 +139,12 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
     }
 
     mon_cfg_raw = dict(data.get("monitoring") or {})
+    _band_defaults = {"short": [0.07, 0.12], "mid": [0.18, 0.22], "long": [0.25, 0.30]}
+    bands_raw = dict(mon_cfg_raw.get("benchmark_bands") or {})
+    benchmark_bands = {
+        horizon: [float(v) for v in bands_raw.get(horizon, defaults)]
+        for horizon, defaults in _band_defaults.items()
+    }
     monitoring_cfg = {
         "registry_path": str(mon_cfg_raw.get("registry_path") or ""),
         "drift_current_window_days": int(
@@ -147,6 +153,8 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         "psi_warning": float(mon_cfg_raw.get("psi_warning", 0.30)),
         "psi_alert": float(mon_cfg_raw.get("psi_alert", 0.50)),
         "bias_correction": dict(mon_cfg_raw.get("bias_correction") or {}),
+        "benchmark_bands": benchmark_bands,
+        "tracking_signal_alert": float(mon_cfg_raw.get("tracking_signal_alert", 4.0)),
     }
 
     return EngineConfig(

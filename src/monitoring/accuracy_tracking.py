@@ -195,6 +195,36 @@ def score_vintage(
         "global": compute_metrics(merged["actual"], merged["forecast"]).to_dict(),
         "by_lead_band": [],
     }
+    # tracking signal (control de sesgo sistemático): Σ error con signo
+    # contra la desviación media — errores simétricos → ~0; sesgo sostenido
+    # en una dirección → crece (umbral clásico |TS| ≤ 4). El MAPE sin signo
+    # no puede ver este patrón; la TS sí (es la estadística que habría
+    # atrapado el ciclo presupuestario optimista 2025 de la industria).
+    # Se calcula POR PROPIEDAD sobre la añada: la TS global escala con n
+    # por construcción (indistinguible), la de cada hotel es el control
+    # que la industria usa por departamento.
+    err = (merged["forecast"] - merged["actual"]).to_numpy(dtype=float)
+    mad = float(np.mean(np.abs(err))) if len(err) else 0.0
+    report["global"]["tracking_signal"] = (
+        float(np.sum(err) / mad) if mad > 0 else 0.0
+    )
+    by_property: list[dict] = []
+    for prop, grp in merged.groupby("property", observed=True):
+        e = (grp["forecast"] - grp["actual"]).to_numpy(dtype=float)
+        mad_p = float(np.mean(np.abs(e))) if len(e) else 0.0
+        m = compute_metrics(grp["actual"], grp["forecast"])
+        by_property.append(
+            {
+                "property": str(prop),
+                "n_obs": int(len(grp)),
+                "wmape": m.wmape,
+                "bias": m.bias,
+                "tracking_signal": float(np.sum(e) / mad_p) if mad_p > 0 else 0.0,
+            }
+        )
+    report["by_property"] = sorted(
+        by_property, key=lambda r: abs(r["tracking_signal"]), reverse=True
+    )
     for band, grp in merged.groupby(merged["lead_days"].map(lead_band)):
         report["by_lead_band"].append(
             {"lead_band": band, "n_obs": int(len(grp)),

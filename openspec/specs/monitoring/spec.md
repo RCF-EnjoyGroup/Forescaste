@@ -54,6 +54,7 @@ El sistema SHALL persistir un registro append-only entre corridas con: métricas
 - **THEN** ese forecast se puntúa por vintage (métricas, desglose por lead y cobertura de banda)
 - **THEN** la revisión entre corridas (delta sobre estancias comunes) se publica en los KPIs
 - **THEN** el detalle forecast-vs-real por estancia (publicado P50/banda, real, error en RN, error % y si el real cayó dentro de la banda) se publica en `vintage_tracking_detail.csv`, con la corrida que lo publicó (`published_run_id`) para trazabilidad
+- **THEN** la señal de rastreo (Σ error con signo ÷ desviación media) se calcula **por propiedad** sobre la añada — el control de sesgo sistemático acumulado que el MAPE esconde, con umbral configurable (clásico |TS| ≤ 4)
 - **WHEN** ninguna estancia del forecast anterior se ha materializado
 - **THEN** el CSV no se publica (nunca se inventa) y el manifiesto lo documenta
 
