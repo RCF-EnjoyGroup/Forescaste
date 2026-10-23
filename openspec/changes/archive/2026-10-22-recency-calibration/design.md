@@ -43,13 +43,34 @@ materialmente") **no se cumple** → el default queda en 1.0. La maquinaria
 y el knob quedan: cuando el expediente de vintages acumule evidencia por
 añada, recalibrar es cambiar un número en config.yaml, no un proyecto.
 
-## Por qué un resultado negativo es un buen resultado
+## CORRECCIÓN (23-oct): el A/B estaba confundido y el estimador tenía un side effect
 
-El A/B mide con datos lo que la intuición sugería — y la refuta en neto.
-Registrar el resultado negativo (en tasks.md y en el comentario del config)
-evita que alguien reintente la misma hipótesis dentro de un año sin saber
-que ya se probó. Los rojos que se quedaron (TS de FIESTA/SJOSL,
-coberturas de LIREL/MARINA) son ahora **señales con evidencia en contra de
-la corrección barata** — lo que queda es exactamente lo que debe quedar:
-esperar la próxima añada, acumular expediente, y atacar con datos frescos
-lo que los datos frescos digan.
+La revisión de las corridas del 23-oct (misma data, métricas idénticas al
+dígito) expuso que las coberturas diferían del baseline sin que el punto
+cambiara: la maquinaria de recencia cambió el estimador de cuantiles
+(interpolación por punto medio ponderado) también con pesos UNIFORMES,
+moviendo coberturas por sí sola (LIREL 93.3→95.6%, CORIN 82.2→83.3%,
+desviación media 13.15→13.70pp). Eso contaminó el A/B: el "antes"
+(`real-20261021-0901`) usaba el estimador viejo y el "después" el nuevo.
+
+**Comparación limpia** (mismo estimador ambos lados):
+- estimador nuevo + uniforme (23-oct): desviación media 13.70pp
+- estimador nuevo + decay 0.7 (22-oct): desviación media 13.52pp
+
+→ El decay es un **empate técnico** (−0.2pp), no la degradación que se
+registró. La decisión no cambia — default uniforme por parsimonia, sin
+beneficio demostrado — pero el registro queda corregido. 
+
+**Reparación**: `_wquantile` cae a `np.quantile` exacto con pesos uniformes
+— el knob de recencia es ahora puramente aditivo (decay=1.0 reproduce bit
+a bit la banda clásica), con test de regresión que lo blinda.
+
+## La lección (va con la corrección)
+
+El A/B midió con datos — y la medición misma tenía un confounder que solo
+la corrida de control del día siguiente expuso. Es exactamente por esto
+que la reproducibilidad bit a bit es un gate de aceptación: el punto no
+cambió, las bandas sí, y eso delató el side effect. Registrar la
+corrección evita que el expediente mienta. Los veredictos que se quedan
+(TS de FIESTA/SJOSL, coberturas de LIREL/MARINA) siguen siendo señales
+reales — y ahora se miden con el estimador correcto.

@@ -243,6 +243,30 @@ def test_recencia_desplaza_la_banda_hacia_el_regimen_reciente():
     assert "proyectada" in (res.note or ""), "la proyección queda documentada"
 
 
+def test_cuantiles_pesos_uniformes_reproducen_np_quantile():
+    """Regresión (corrección 23-oct): pesos uniformes → np.quantile EXACTO.
+
+    El estimador de punto medio con pesos uniformes desplazaba la banda
+    (LIREL +2.2pp de cobertura sin tocar el punto) — el knob de recencia
+    debe ser puramente aditivo: decay=1.0 reproduce la banda clásica bit
+    a bit.
+    """
+    import numpy as np
+    from src.forecasting.constraints import build_intervals
+
+    rng = np.random.default_rng(9)
+    residuales = rng.normal(5, 12, 300)
+    # mismo set de residuos: Series (sin peso) vs DataFrame con pesos 1.0
+    df = _frame_intervalos([("corin", 100.0)])
+    serie = pd.Series(residuales)
+    ponderado = pd.DataFrame({"residual": residuales, "weight": [1.0] * 300})
+    r1 = build_intervals(df, model_name="x", residual_bands={("corin", "30-59"): serie})
+    r2 = build_intervals(df, model_name="x", residual_bands={("corin", "30-59"): ponderado})
+    f1, f2 = r1.frame, r2.frame
+    assert np.allclose(f1["p10_forecast"], f2["p10_forecast"]), "p10 con pesos 1.0 debe ser el clásico"
+    assert np.allclose(f1["p90_forecast"], f2["p90_forecast"]), "p90 con pesos 1.0 debe ser el clásico"
+
+
 def test_recencia_uniforme_es_el_comportamiento_previo():
     """Decay 1.0: ponderación uniforme — la banda ancha cubre ambos regímenes."""
     preds = _fold_predictions_regimen()

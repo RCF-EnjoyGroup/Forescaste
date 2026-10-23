@@ -119,12 +119,11 @@ monitoring:
   tracking_signal_alert: 4.0
   # Ponderación de RECENCIA en la calibración de la banda: los residuos del
   # fold más reciente pesan 1.0, el anterior decay, y así hacia atrás.
-  # A/B del 22-oct (misma data/corte/seed, cobertura por propiedad): decay
-  # 0.7 mejoró a FIESTA (52→57%) y VILLAS (92→90%) pero degradó a LIREL
-  # (93→97%) y MARINA (63→60%); desviación media |cov-80%| 0.131 → 0.135 —
-  # NO superó al baseline, así que el default queda en 1.0 (uniforme).
-  # La maquinaria queda disponible: cuando el expediente de vintages
-  # acumule evidencia, recalibrar aquí no requiere tocar código.
+  # A/B corregido (23-oct, mismo estimador ambos lados): decay 0.7 da
+  # desviación media |cov-80%| 13.52pp vs 13.70pp uniforme — empate técnico
+  # (FIESTA +4.4/VILLAS −2.2 mejoran; MARINA −3.3/LIREL +1.1 empeoran) →
+  # default 1.0 (uniforme) por parsimonia. Sin beneficio demostrado, sin
+  # cambio. La maquinaria queda: recalibrar aquí no requiere tocar código.
   interval_recency_decay: 1.0
 
 # Calendario de feriados (fuente confiable: librería `holidays`): CR (Semana

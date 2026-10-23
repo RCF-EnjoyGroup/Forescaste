@@ -334,8 +334,18 @@ def build_intervals(
         return np.asarray(cell, dtype=float), None
 
     def _wquantile(vals: np.ndarray, weights: np.ndarray, q: float) -> float:
-        """Cuantil ponderado: interpolación sobre pesos acumulados."""
+        """Cuantil ponderado: interpolación por punto medio de pesos acumulados.
+
+        Con pesos UNIFORMES cae a ``np.quantile`` exacto — la maquinaria de
+        recencia no debe cambiar la banda cuando está desactivada (decay=1.0):
+        el knob es puramente aditivo. (Corrección del 23-oct: el estimador de
+        punto medio con pesos uniformes desplazaba coberturas — LIREL
+        +2.2pp — y contaminó el A/B del 22-oct; con el fallback, decay=1.0
+        reproduce bit a bit la banda clásica.)
+        """
         if weights is None or not np.isfinite(weights).all() or float(weights.sum()) <= 0:
+            return float(np.quantile(vals, q))
+        if np.allclose(weights, weights[0]):
             return float(np.quantile(vals, q))
         order = np.argsort(vals)
         v, w = vals[order], np.clip(weights[order], 0.0, None)
@@ -459,16 +469,25 @@ def build_intervals(
             band_shifts: dict[str, tuple[float, float]] = {}
             fallback_bands: list[str] = []
             for band, res in residual_bands.items():
-                res = pd.Series(res).dropna()
-                if len(res) >= min_residuals:
+                vals, _w = _cell_values(res)
+                if len(vals) >= min_residuals:
                     band_shifts[band] = _shifts(res)
                 else:
                     fallback_bands.append(band)
             if global_shift is None:
-                pool = pd.concat(
-                    [pd.Series(r).dropna() for r in residual_bands.values()], ignore_index=True
+                pool_vals = [
+                    _cell_values(r)[0] for r in residual_bands.values()
+                ]
+                pool = (
+                    np.concatenate(pool_vals)
+                    if pool_vals and all(len(v) > 0 for v in pool_vals)
+                    else np.array([])
                 )
-                global_shift = _shifts(pool)
+                global_shift = (
+                    _shifts(pool) if len(pool) else None
+                )
+                if global_shift is None:
+                    global_shift = (0.0, 0.0)
             if fallback_bands:
                 notes.append(
                     f"bandas con < {min_residuals} residuos heredan el pool global: "
