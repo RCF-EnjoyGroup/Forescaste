@@ -85,6 +85,7 @@ from src.monitoring.accuracy_tracking import (
     forecast_revision,
     load_published_forecast,
     score_vintage,
+    select_gradable_publication,
     vintage_detail,
 )
 from src.monitoring.drift import (
@@ -639,6 +640,7 @@ def run_end_to_end(
     # corrida anterior, histéresis del campeón y tracking vintage
     previous_run: dict[str, Any] | None = None
     previous_operational: dict[str, Any] | None = None
+    registry: dict[str, Any] | None = None
     if registry_path is not None:
         try:
             registry = load_registry(registry_path)
@@ -1078,33 +1080,50 @@ def run_end_to_end(
     # entre corridas (delta del forecast sobre estancias aún futuras)
     vintage_tracking: dict | None = None
     forecast_rev: dict | None = None
-    if previous_operational is not None:
+    if registry is not None:
         try:
-            prev_fc = load_published_forecast(
-                str(previous_operational.get("run_dir") or "")
+            futuros = [
+                r for r in registry.get("records") or []
+                if str(r.get("mode")) == "futuro"
+            ]
+            # revisión entre corridas: contra la última publicación (linaje)
+            if previous_operational is not None:
+                prev_fc = load_published_forecast(
+                    str(previous_operational.get("run_dir") or "")
+                )
+                if prev_fc is not None:
+                    forecast_rev = forecast_revision(forecast_final, prev_fc)
+                    if forecast_rev is not None:
+                        kpis["forecast_vs_previous"] = float(forecast_rev["delta"])
+                        kpis["forecast_vs_previous_pct"] = float(
+                            forecast_rev["delta_pct"]
+                        )
+            # vintage: la publicación MÁS RECIENTE cuya añada ya tiene reales
+            # (una futura recién publicada con corte en el último real aún no
+            # es graduable — su horizonte entero es futuro)
+            seleccion = select_gradable_publication(
+                futuros, dem, through=pd.Timestamp(dem["stay_date"].max())
             )
-            if prev_fc is not None:
-                vintage_tracking = score_vintage(
-                    prev_fc, dem, through=pd.Timestamp(dem["stay_date"].max())
+            if seleccion is not None:
+                record_annada, vintage_tracking = seleccion
+                vintage_tracking["published_run_id"] = str(
+                    record_annada.get("run_id") or ""
                 )
-                forecast_rev = forecast_revision(forecast_final, prev_fc)
-                if forecast_rev is not None:
-                    kpis["forecast_vs_previous"] = float(forecast_rev["delta"])
-                    kpis["forecast_vs_previous_pct"] = float(
-                        forecast_rev["delta_pct"]
+                # detalle forecast-vs-real por estancia (entregable CSV)
+                prev_fc = load_published_forecast(
+                    str(record_annada.get("run_dir") or "")
+                )
+                if prev_fc is not None:
+                    detail = vintage_detail(
+                        prev_fc,
+                        dem,
+                        through=pd.Timestamp(dem["stay_date"].max()),
+                        published_run_id=str(record_annada.get("run_id") or ""),
                     )
-                # detalle forecast-vs-real por estancia (entregable CSV):
-                # cuánto se pronosticó (P50/banda, con lo reservado al
-                # publicar) vs lo que realmente llegó, estancia por estancia
-                detail = vintage_detail(
-                    prev_fc,
-                    dem,
-                    through=pd.Timestamp(dem["stay_date"].max()),
-                    published_run_id=str(previous_operational.get("run_id") or ""),
-                )
-                if not detail.empty:
-                    detail.to_csv(run_dir / "vintage_tracking_detail.csv", index=False)
-                    if vintage_tracking is not None:
+                    if not detail.empty:
+                        detail.to_csv(
+                            run_dir / "vintage_tracking_detail.csv", index=False
+                        )
                         vintage_tracking["detail_csv"] = "vintage_tracking_detail.csv"
                         vintage_tracking["n_detail_rows"] = int(len(detail))
         except Exception as exc:  # el tracking jamás rompe la corrida

@@ -52,6 +52,7 @@ El sistema SHALL persistir un registro append-only entre corridas con: métricas
 #### Scenario: Tracking vintage del forecast publicado
 - **WHEN** la corrida anterior publicó un forecast operativo y parte de su horizonte ya tiene reales
 - **THEN** ese forecast se puntúa por vintage (métricas, desglose por lead y cobertura de banda)
+- **THEN** la añada graduada es la publicación operativa MÁS RECIENTE cuya ventana ya tiene reales — una futura recién publicada con corte en el último real aún no es graduable (su horizonte entero es futuro); el reporte declara qué añada se graduó (`published_run_id`)
 - **THEN** la revisión entre corridas (delta sobre estancias comunes) se publica en los KPIs
 - **THEN** el detalle forecast-vs-real por estancia (publicado P50/banda, real, error en RN, error % y si el real cayó dentro de la banda) se publica en `vintage_tracking_detail.csv`, con la corrida que lo publicó (`published_run_id`) para trazabilidad
 - **THEN** la señal de rastreo (Σ error con signo ÷ desviación media) se calcula **por propiedad** sobre la añada — el control de sesgo sistemático acumulado que el MAPE esconde, con umbral configurable (clásico |TS| ≤ 4)

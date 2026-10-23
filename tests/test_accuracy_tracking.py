@@ -171,6 +171,79 @@ def test_vintage_detalle_por_estancia():
     assert detail.equals(detail.sort_values(["property", "stay_date"]).reset_index(drop=True))
 
 
+def test_select_gradable_publication_salta_la_no_graduable(tmp_path):
+    """La publicación más reciente sin reales se salta; gradúa la anterior.
+
+    Regresión del caso real 23-oct: correr una futura con corte en el
+    último real y DESPUÉS una verificación dejaba el vintage en None —
+    la añada graduable era la publicación anterior.
+    """
+    from src.monitoring.accuracy_tracking import select_gradable_publication
+
+    dem = pd.DataFrame({
+        "property": ["corin"] * 3,
+        "stay_date": pd.date_range("2026-10-20", periods=3),
+        "room_nights": [30.0, 31.0, 30.0],
+    })
+
+    # futura NUEVA: cubre estancias 23-oct+ (sin reales) → no graduable
+    nueva_dir = tmp_path / "futuro-nueva"
+    nueva_dir.mkdir()
+    fechas_futuras = pd.date_range("2026-10-23", periods=5)
+    pd.DataFrame({
+        "property": ["corin"] * len(fechas_futuras),
+        "stay_date": fechas_futuras,
+        "final_forecast_rn": [30.0] * len(fechas_futuras),
+        "p10_forecast": [20.0] * len(fechas_futuras),
+        "p90_forecast": [40.0] * len(fechas_futuras),
+    }).to_csv(nueva_dir / "future_forecast_dataset.csv", index=False)
+
+    # futura ANTERIOR: cubre 20-22 oct (con reales) → graduable
+    vieja_dir = tmp_path / "futuro-vieja"
+    vieja_dir.mkdir()
+    fechas_pasadas = pd.date_range("2026-10-20", periods=5)
+    pd.DataFrame({
+        "property": ["corin"] * len(fechas_pasadas),
+        "stay_date": fechas_pasadas,
+        "final_forecast_rn": [30.5] * len(fechas_pasadas),
+        "p10_forecast": [20.0] * len(fechas_pasadas),
+        "p90_forecast": [40.0] * len(fechas_pasadas),
+    }).to_csv(vieja_dir / "future_forecast_dataset.csv", index=False)
+
+    records = [
+        {"mode": "real", "run_id": "real-x", "timestamp": "2026-10-23T18:00:00+00:00",
+         "run_dir": str(tmp_path)},
+        {"mode": "futuro", "run_id": "futuro-nueva", "timestamp": "2026-10-23T17:45:00+00:00",
+         "run_dir": str(nueva_dir)},
+        {"mode": "futuro", "run_id": "futuro-vieja", "timestamp": "2026-10-23T14:11:00+00:00",
+         "run_dir": str(vieja_dir)},
+    ]
+    sel = select_gradable_publication(records, dem, through=pd.Timestamp("2026-10-22"))
+    assert sel is not None
+    record, score = sel
+    assert record["run_id"] == "futuro-vieja", "salta la no graduable y toma la anterior"
+    assert score["n_obs"] == 3
+
+
+def test_select_gradable_publication_sin_graduables(tmp_path):
+    from src.monitoring.accuracy_tracking import select_gradable_publication
+
+    dem = pd.DataFrame({
+        "property": ["corin"] * 3,
+        "stay_date": pd.date_range("2026-10-20", periods=3),
+        "room_nights": [30.0, 31.0, 30.0],
+    })
+    records = [{"mode": "real", "run_id": "real-x", "timestamp": "t",
+                "run_dir": str(tmp_path)}]
+    assert select_gradable_publication(
+        records, dem, through=pd.Timestamp("2026-10-22")
+    ) is None
+    # sin registros futuros: None sin recorrer nada
+    assert select_gradable_publication(
+        [], dem, through=pd.Timestamp("2026-10-22")
+    ) is None
+
+
 def test_vintage_detalle_sin_materializados_devuelve_vacio():
     from src.monitoring.accuracy_tracking import vintage_detail
 

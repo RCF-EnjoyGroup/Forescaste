@@ -238,6 +238,40 @@ def score_vintage(
     return report
 
 
+def select_gradable_publication(
+    records: list[dict],
+    actuals: pd.DataFrame,
+    *,
+    through: pd.Timestamp,
+    max_lookback: int = 5,
+) -> tuple[dict, dict] | None:
+    """La publicación operativa MÁS RECIENTE cuya añada ya tiene reales.
+
+    Correr una futura con el corte en el último real deja su propio
+    horizonte sin estancias materializadas — la añada graduable es la
+    publicación ANTERIOR. Itera los registros de modo ``futuro`` del más
+    reciente al más antiguo (máx. ``max_lookback``) y devuelve la primera
+    con scoring no vacío: ``(record, score)``. ``None`` sin ninguna
+    graduable (primera corrida futura del registro).
+
+    El registro no incluye la corrida actual (se escribe al final), así
+    que la iteración nunca se gradúa a sí misma.
+    """
+    futuros = sorted(
+        (r for r in records if str(r.get("mode")) == "futuro"),
+        key=lambda r: str(r.get("timestamp") or ""),
+        reverse=True,
+    )
+    for record in futuros[:max(1, int(max_lookback))]:
+        published = load_published_forecast(str(record.get("run_dir") or ""))
+        if published is None:
+            continue
+        score = score_vintage(published, actuals, through=through)
+        if score is not None:
+            return record, score
+    return None
+
+
 def forecast_revision(
     current: pd.DataFrame,
     previous: pd.DataFrame,

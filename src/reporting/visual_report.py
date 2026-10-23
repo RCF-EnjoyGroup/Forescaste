@@ -534,11 +534,15 @@ def _validation_panel(
             " — detalle por estancia en vintage_tracking_detail.csv"
             if vt.get("detail_csv") else ""
         )
+        annada = (
+            f" · añada: {vt['published_run_id']}" if vt.get("published_run_id") else ""
+        )
         _row(
             "Forecast publicado vs reales (vintage)", f"{w:.1%} (n={n})",
             f"el forecast publicado por la corrida anterior, puntuado contra los "
             f"reales ya materializados ({window.get('start', '—')} → "
-            f"{window.get('end', '—')}); WMAPE < 15% bien · 15–25% revisar{extra}{detalle}",
+            f"{window.get('end', '—')}); WMAPE < 15% bien · 15–25% revisar{extra}"
+            f"{annada}{detalle}",
             nivel,
         )
 
