@@ -740,6 +740,62 @@ def test_panel_benchmark_cita_la_annada_reciente(tmp_path):
     assert "añada publicada reciente" not in seg_medio
 
 
+def test_panel_expediente_una_annada_acumulando(tmp_path):
+    """Con una sola añada graduada: fila info «Acumulando»."""
+    track = [{
+        "published_run_id": "futuro-1", "published_at": "t", "cutoff": "2026-10-06",
+        "window": {"start": "2026-10-07", "end": "2026-10-19"},
+        "n_obs": 78, "wmape": 0.093, "mape": 9.3, "bias": 0.06,
+        "band_coverage": 0.91, "tracking_signal_worst": None,
+    }]
+    out = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.13, "mape": 22.0, "bias": -0.03, "n_obs": 540},
+        track_record=track,
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "Expediente del forecast publicado" in html
+    assert "1 añada graduada" in html
+    assert "Acumulando" in html
+    # la sección con tabla y gráfica
+    assert html.count("Expediente del forecast publicado") >= 2, "fila del panel + sección"
+    assert "2026-10-06" in html and "78" in html
+
+
+def test_panel_expediente_tendencia_mejorando(tmp_path):
+    """Dos añadas, la última mejor → «Mejorando» con la salvedad del n."""
+    track = [
+        {"published_run_id": "futuro-1", "published_at": "t1", "cutoff": "2026-10-06",
+         "window": {"start": "2026-10-07", "end": "2026-10-19"},
+         "n_obs": 78, "wmape": 0.093, "mape": 9.3, "bias": 0.06,
+         "band_coverage": 0.91, "tracking_signal_worst": None},
+        {"published_run_id": "futuro-2", "published_at": "t2", "cutoff": "2026-10-19",
+         "window": {"start": "2026-10-20", "end": "2026-10-22"},
+         "n_obs": 18, "wmape": 0.044, "mape": 4.4, "bias": 0.04,
+         "band_coverage": 1.0, "tracking_signal_worst": None},
+    ]
+    out = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.13, "mape": 22.0, "bias": -0.03, "n_obs": 540},
+        track_record=track,
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "2 añadas graduadas" in html
+    assert "Mejorando" in html
+    assert "n=18" in html, "la salvedad del n pequeño va explícita"
+
+
+def test_panel_expediente_sin_graduaciones_omito(tmp_path):
+    out = generate_visual_report(
+        tmp_path, _fc_multi_propiedad(),
+        metrics={"wmape": 0.13, "mape": 22.0, "bias": -0.03, "n_obs": 540},
+        track_record=[],
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "Expediente del forecast publicado" not in html
+    assert "Sin añadas graduadas" not in html, "sin añadas no sección"
+
+
 def test_panel_tracking_signal_en_control(tmp_path):
     vintage = {
         "n_obs": 78,

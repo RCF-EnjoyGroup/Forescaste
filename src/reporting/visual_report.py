@@ -299,6 +299,73 @@ def _vintage_grupo(vintage_tracking: dict | None, bandas: tuple[str, ...]) -> st
     return f" · añada publicada reciente: {abs_err / denom:.1%} (n={n}, real)"
 
 
+def _chart_track_record(track: list[dict] | None) -> str | None:
+    """WMAPE por añada — el expediente en una vista."""
+    if not track:
+        return None
+    labels = [
+        f"{e.get('cutoff', '—')[:10]}\n(n={e.get('n_obs', 0)})"
+        for e in track
+    ]
+    wmape = [e.get("wmape") for e in track]
+    fig, ax = plt.subplots(figsize=(8, 3.2))
+    bars = ax.bar(labels, wmape, color=[_COLORS["primary"]] * len(track))
+    for bar, w in zip(bars, wmape):
+        if np.isfinite(w):
+            ax.text(bar.get_x() + bar.get_width() / 2, w, f"{w:.1%}",
+                    ha="center", va="bottom", fontsize=9, color=_COLORS["ink"])
+    ax.set_title("Expediente · WMAPE del forecast publicado por añada (corte de publicación)",
+                 loc="left", fontsize=10.5)
+    ax.set_ylabel("WMAPE")
+    ax.grid(alpha=0.25, axis="y")
+    return _fig_to_base64(fig)
+
+
+def _table_track_record(track: list[dict] | None) -> str:
+    """Tabla del expediente: una fila por añada graduada."""
+    if not track:
+        return '<p class="muted">Sin añadas graduadas aún — se activa con el primer vintage.</p>'
+    rows = []
+    for e in track:
+        cov = e.get("band_coverage")
+        cov_cell = f"{cov:.0%}" if cov is not None and np.isfinite(cov) else "—"
+        ts = e.get("tracking_signal_worst") or {}
+        ts_cell = (
+            f"{ts['value']:+.1f} ({ts['property']})"
+            if ts and np.isfinite(ts.get("value", float("nan")))
+            else "—"
+        )
+        rows.append(
+            f"<tr><td>{e.get('cutoff', '—')}</td>"
+            f"<td>{e['window'].get('start', '—')} → {e['window'].get('end', '—')}</td>"
+            f"<td>{e.get('n_obs', 0)}</td>"
+            f"<td>{e.get('wmape', float('nan')):.1%}</td>"
+            f"<td>{e.get('bias', float('nan')):+.1%}</td>"
+            f"<td>{cov_cell}</td>"
+            f"<td>{ts_cell}</td></tr>"
+        )
+    return (
+        '<table class="tbl"><thead><tr><th>Publicada (corte)</th>'
+        "<th>Ventana graduada</th><th>n obs</th><th>WMAPE</th>"
+        "<th>Bias</th><th>Cobertura banda</th><th>TS peor</th></tr></thead>"
+        "<tbody>" + "".join(rows) + "</tbody></table>"
+    )
+
+
+def _explainer_track_record() -> str:
+    return (
+        '<details class="expl"><summary>¿Cómo leer esta sección?</summary>'
+        "<p><b>Qué ves:</b> el expediente del forecast publicado — cada "
+        "añada (publicación) graduada contra los reales que se materializaron, "
+        "con la graduación más reciente de cada una (la que más reales "
+        "acumuló). <b>Cómo leerla:</b> es la respuesta a la pregunta de "
+        "dueños «¿este forecast es confiable y está mejorando?» — WMAPE por "
+        "añada con su n (añadas recientes tienen menos días materializados: "
+        "leer con el n a la vista). <b>Fuente:</b> el registro entre "
+        "corridas; crece solo con cada refresh de datos.</p></details>"
+    )
+
+
 def _validation_panel(
     *,
     metrics: dict | None,
@@ -316,6 +383,7 @@ def _validation_panel(
     lead_band_breakdown: list[dict] | None = None,
     benchmark_bands: dict | None = None,
     tracking_signal_alert: float | None = None,
+    track_record: list[dict] | None = None,
 ) -> str:
     """Tabla de veredictos: métrica | valor | criterio | lectura.
 
@@ -600,6 +668,45 @@ def _validation_panel(
             f"delta del forecast actual vs el publicado por la corrida anterior "
             f"sobre {int(forecast_revision.get('n_stays', 0))} estancias comunes "
             "aún futuras; |Δ| ≤ 5% estable · ≤ 15% notable",
+            nivel,
+        )
+
+    # --- Expediente del forecast publicado (tendencia entre añadas)
+    if track_record:
+        n_annadas = len(track_record)
+        detalle_exp = " · ".join(
+            f"añada {e.get('cutoff', '—')[:10]}: {e.get('wmape', float('nan')):.1%} (n={e.get('n_obs', 0)})"
+            for e in track_record
+        )
+        if n_annadas < 2:
+            nivel = _chip("info", "Acumulando")
+            tendencia = "una sola añada graduada — la tendencia llega con la segunda"
+        else:
+            ultima = float(track_record[-1]["wmape"])
+            previas = [float(e["wmape"]) for e in track_record[:-1]
+                       if np.isfinite(float(e.get("wmape", float("nan"))))]
+            media_previa = sum(previas) / len(previas) if previas else float("nan")
+            if np.isfinite(media_previa):
+                delta_rel = (ultima - media_previa) / media_previa
+                if delta_rel <= -0.15:
+                    nivel = _chip("ok", "Mejorando")
+                    tendencia = f"última añada {delta_rel:+.0%} vs el promedio de las previas"
+                elif delta_rel < 0.15:
+                    nivel = _chip("ok", "Estable")
+                    tendencia = f"última añada {delta_rel:+.0%} vs el promedio de las previas (dentro de ±15%)"
+                else:
+                    nivel = _chip("warn", "Revisar")
+                    tendencia = f"última añada {delta_rel:+.0%} vs el promedio de las previas"
+            else:
+                nivel = _chip("info", "Acumulando")
+                tendencia = "sin comparación válida aún"
+            # salvedad de n: añadas con pocos días materializados son ruido
+            n_ultima = int(track_record[-1].get("n_obs", 0))
+            if n_ultima < 30:
+                tendencia += f" — OJO: la última añada solo tiene n={n_ultima}, leer con cautela"
+        _row(
+            "Expediente del forecast publicado", f"{n_annadas} añada{'s' if n_annadas != 1 else ''} graduada{'s' if n_annadas != 1 else ''}",
+            f"{tendencia}. {detalle_exp}",
             nivel,
         )
 
@@ -1209,6 +1316,7 @@ def generate_visual_report(
     lead_band_breakdown: list[dict] | None = None,
     benchmark_bands: dict | None = None,
     tracking_signal_alert: float | None = None,
+    track_record: list[dict] | None = None,
     run_id: str | None = None,
     run_mode: str | None = None,
     title: str = "Room Nights Forecast Engine",
@@ -1281,6 +1389,7 @@ def generate_visual_report(
         lead_band_breakdown=lead_band_breakdown,
         benchmark_bands=benchmark_bands,
         tracking_signal_alert=tracking_signal_alert,
+        track_record=track_record,
     )
 
     # ---- precisión: cómo de bien pronostica el motor
@@ -1311,6 +1420,15 @@ def generate_visual_report(
         ),
         _card("Dispersión", _scatter_forecast_vs_actual(forecast, actual_series),
               placeholder=False),
+        *(
+            [_card(
+                "Expediente del forecast publicado",
+                _chart_track_record(track_record),
+                extra=_table_track_record(track_record) + _explainer_track_record(),
+                wide=True,
+                placeholder=False,
+            )] if track_record else []
+        ),
     ]
 
     # ---- pronóstico: lo que se publica y de qué está hecho

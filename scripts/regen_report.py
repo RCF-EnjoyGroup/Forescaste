@@ -24,6 +24,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from src.config import load_config
+from src.monitoring.accuracy_tracking import build_track_record
+from src.monitoring.run_registry import load_registry
 from src.reporting.visual_report import generate_visual_report  # noqa: E402
 
 
@@ -134,6 +136,13 @@ def main(run_dir: str) -> int:
                     filas, key=lambda r: abs(r["tracking_signal"]), reverse=True
                 )
     cfg_monitoring = dict((load_config().monitoring or {}))
+    # expediente as-of: solo registros ANTERIORES a la corrida regenerada
+    # (los reportes viejos no citan añadas graduadas después de su fecha)
+    reg = load_registry(cfg_monitoring.get("registry_path") or "outputs/monitoring/run_registry.json")
+    ts_corrida = str(man.get("timestamp") or "")
+    records_asof = [r for r in (reg.get("records") or [])
+                    if str(r.get("timestamp") or "") <= ts_corrida or not ts_corrida]
+    track_record = build_track_record(records_asof)
     out = generate_visual_report(
         run_dir,
         forecast,
@@ -165,6 +174,7 @@ def main(run_dir: str) -> int:
         lead_band_breakdown=acc.get("by_lead_band") or None,
         benchmark_bands=cfg_monitoring.get("benchmark_bands"),
         tracking_signal_alert=float(cfg_monitoring.get("tracking_signal_alert", 4.0)),
+        track_record=track_record,
         run_id=run_dir.name,
         run_mode=(
             "futuro" if run_dir.name.startswith("futuro")

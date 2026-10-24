@@ -82,6 +82,7 @@ from src.forecasting.core import (  # re-exportados para tests/CLI
     predict_candidate,
 )
 from src.monitoring.accuracy_tracking import (
+    build_track_record,
     forecast_revision,
     load_published_forecast,
     score_vintage,
@@ -1138,6 +1139,22 @@ def run_end_to_end(
         coverage=coverage,
     )
 
+    # expediente del forecast publicado: todas las añadas graduadas
+    # (deduplicadas, graduación más reciente por añada) desde el registro
+    track_record = build_track_record(registry.get("records") or []) if registry else []
+    track_summary = {
+        "n_annadas_graduadas": len(track_record),
+        "annadas": [
+            {
+                "cutoff": e.get("cutoff"),
+                "window": e.get("window"),
+                "n_obs": e.get("n_obs"),
+                "wmape": e.get("wmape"),
+            }
+            for e in track_record
+        ],
+    }
+
     # ---------- 12. manifiesto (campeón coherente, JSON estricto)
     train_start = pd.Timestamp(history["stay_date"].min())
     manifest = RunManifest(
@@ -1199,6 +1216,7 @@ def run_end_to_end(
             "bias_correction": _jsonable(bias_report),
             "vintage_tracking": _jsonable(vintage_tracking),
             "forecast_revision": _jsonable(forecast_rev),
+            "track_record": _jsonable(track_summary),
             "previous_run": (
                 {
                     "run_id": previous_run.get("run_id"),
@@ -1433,6 +1451,7 @@ def run_end_to_end(
             tracking_signal_alert=float(
                 dict(config.monitoring or {}).get("tracking_signal_alert", 4.0)
             ),
+            track_record=track_record,
             run_id=run_dir.name,
             run_mode=(
                 str(run_mode) if str(run_mode) in ("real", "futuro") else None

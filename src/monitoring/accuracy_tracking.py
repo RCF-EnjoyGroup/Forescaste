@@ -238,6 +238,85 @@ def score_vintage(
     return report
 
 
+def build_track_record(records: list[dict]) -> list[dict]:
+    """Reconstruye el expediente de añadas graduadas desde el registro.
+
+    Cada corrida con vintage guarda la graduación de UNA añada; múltiples
+    corridas gradúan la misma añada (con más reales cada vez) y hay que
+    deduplicar. La identidad de la añada:
+
+    - ``vintage.published_run_id`` (corridas desde el fix de selección), o
+    - atribución por ventana: la publicación que cubre ``window.start``
+      tiene corte ``window.start − 1d`` → el registro ``futuro`` con ese
+      cutoff (graduaciones previas al campo).
+
+    Cada añada queda con su graduación MÁS RECIENTE (la que más reales
+    acumuló), ordenada por fecha de publicación.
+
+    Returns
+    -------
+    lista de dicts por añada: ``published_run_id``, ``published_at``,
+    ``cutoff``, ``window``, ``n_obs``, ``wmape``, ``mape``, ``bias``,
+    ``band_coverage``, ``tracking_signal_worst`` (propiedad y valor).
+    """
+    futuros_por_corte: dict[str, dict] = {}
+    for r in records:
+        if str(r.get("mode")) == "futuro":
+            futuros_por_corte[str(r.get("cutoff"))] = r
+
+    graduaciones: dict[str, dict] = {}
+    for r in records:
+        vt = r.get("vintage_tracking") or {}
+        if not vt.get("global"):
+            continue
+        w = vt.get("window") or {}
+        inicio = str(w.get("start") or "")
+        if not inicio:
+            continue
+        # identidad de la añada
+        annada = str(vt.get("published_run_id") or "")
+        if not annada:
+            corte_pub = (
+                pd.Timestamp(inicio) - pd.Timedelta(days=1)
+            ).date().isoformat()
+            pub = futuros_por_corte.get(corte_pub)
+            annada = str((pub or {}).get("run_id") or f"publicacion-{corte_pub}")
+        previa = graduaciones.get(annada)
+        if previa is not None and str(previa.get("_graded_at", "")) >= str(
+            r.get("timestamp") or ""
+        ):
+            continue
+        g = vt["global"]
+        by_prop = vt.get("by_property") or []
+        peor_ts = by_prop[0] if by_prop else None
+        band = (vt.get("interval_coverage") or {}).get("global") or {}
+        graduaciones[annada] = {
+            "published_run_id": annada,
+            "published_at": str(r.get("timestamp") or ""),
+            "cutoff": str(
+                (futuros_por_corte.get(str((pd.Timestamp(inicio) - pd.Timedelta(days=1)).date().isoformat())) or {}).get("cutoff")
+                or (inicio)
+            ),
+            "window": {"start": inicio, "end": str(w.get("end") or "")},
+            "n_obs": int(vt.get("n_obs") or g.get("n_obs") or 0),
+            "wmape": float(g.get("wmape", float("nan"))),
+            "mape": float(g.get("mape", float("nan"))),
+            "bias": float(g.get("bias", float("nan"))),
+            "band_coverage": float(band.get("coverage", float("nan")))
+            if band else float("nan"),
+            "tracking_signal_worst": {
+                "property": str((peor_ts or {}).get("property") or ""),
+                "value": float((peor_ts or {}).get("tracking_signal", float("nan")))
+            } if peor_ts else None,
+            "_graded_at": str(r.get("timestamp") or ""),
+        }
+    expediente = [v for v in graduaciones.values() if v["n_obs"] > 0]
+    expediente.sort(key=lambda e: (e["cutoff"], e["published_run_id"]))
+    for e in expediente:
+        e.pop("_graded_at", None)
+    return expediente
+
+
 def select_gradable_publication(
     records: list[dict],
     actuals: pd.DataFrame,
