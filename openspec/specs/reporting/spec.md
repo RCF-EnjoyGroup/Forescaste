@@ -141,3 +141,12 @@ El reporte HTML SHALL ser legible sin conocimiento previo del motor: cada secci�
 #### Scenario: Regeneración de la vista sin re-correr
 - **WHEN** se mejora la presentación del reporte
 - **THEN** `scripts/regen_report.py` reconstruye `report.html` de una corrida existente desde sus entregables, sin re-entrenar ni re-correr el pipeline
+
+
+### Requirement: Reporte mensual de vintages por corte
+El sistema SHALL proveer un entregable de negocio con la matriz de vintages mensual: para cada corte del día 15 de cada mes (mientras existan reales a esa fecha), la proyección del mes en curso + los 2 siguientes, contra el real de cada mes proyectado. El mes en curso al corte SHALL proyectarse como cierre de mes (reales 1-15 + pronóstico 16-fin); los modelos SHALL ajustarse as-of el corte (historia ≤ corte, sin fuga); los meses sin reales completos SHALL quedar vacíos (nunca inventados); la metodología y sus salvedades SHALL declararse en el propio archivo.
+
+#### Scenario: Matriz de vintages mensual
+- **WHEN** se ejecuta `scripts/monthly_vintage_report.py`
+- **THEN** el Excel contiene una fila por (corte × propiedad × mes proyectado) con RN Real y RN Pronosticado, y cada mes proyectado queda cubierto por 1-3 vintages según los cortes disponibles
+- **THEN** los cortes posteriores al último real se omiten (nov-15 y dic-15 aún no existen) y los meses proyectados sin reales llevan RN Real vacío
