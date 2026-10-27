@@ -44,6 +44,11 @@ El sistema SHALL ejecutar pruebas automáticas que detecten: RN futuros, pickup 
 - **THEN** la corrida termina en error indicando la feature y la evidencia
 - **THEN** no se publica ningún forecast de esa corrida
 
+#### Scenario: Recalculo en la semántica del builder (calendario)
+- **WHEN** se recalcula una feature rolling almacenada para contrastarla con la ventana solo-hacia-atrás
+- **THEN** el recalculo usa la MISMA semántica del builder: la grilla calendario reindexada por propiedad (los huecos de la fuente son NaN que la ventana salta con min_periods), comparando solo en las fechas observadas
+- **THEN** un recalculo por ENTRADAS en series con huecos genera falsos positivos (coincidencias numéricas con la ventana centrada por-entradas) y SHALL evitarse
+
 #### Scenario: Sin leakage
 - **WHEN** todas las pruebas de leakage pasan
 - **THEN** el pipeline continúa y registra el resultado de las pruebas en el reporte de la corrida

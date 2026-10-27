@@ -298,6 +298,74 @@ def test_rolling_con_futuro_detectado():
     )
 
 
+# ------- remediación 27-oct: semántica calendario en series con huecos -----
+
+
+def _serie_marina_con_hueco():
+    """El caso real que detuvo la corrida del 27-oct: hueco en 2025-05-06.
+
+    La feature almacenada es calendario-correcta (7.000 en 05-09 = media de
+    05-02..05-08 saltando el NaN del 06, SIN la fila propia, SIN futuro) —
+    pero coincidía numéricamente con la ventana centrada por-ENTRADAS del
+    check viejo: falso positivo que bloqueaba la corrida.
+    """
+    valores = {
+        "2025-05-01": 10.0, "2025-05-02": 10.0, "2025-05-03": 9.0,
+        "2025-05-04": 3.0, "2025-05-05": 3.0,
+        # 2025-05-06: HUECO de la fuente
+        "2025-05-07": 10.0, "2025-05-08": 7.0, "2025-05-09": 9.0,
+        "2025-05-10": 8.0, "2025-05-11": 3.0, "2025-05-12": 9.0,
+    }
+    daily = pd.Series(valores)
+    daily.index = pd.to_datetime(daily.index)
+    grid = pd.date_range(daily.index.min(), daily.index.max(), freq="D")
+    daily = daily.reindex(grid)
+    return daily
+
+
+def test_rolling_calendario_correcto_con_hueco_no_es_fuga():
+    """Feature calendario-correcta en serie con hueco → SIN hallazgo.
+
+    Regresión del falso positivo que detuvo la corrida del 27-oct: el check
+    recalcula por entradas y el valor calendario-correcto coincidía
+    numéricamente con su ventana centrada ((3+10+7+9+8+3+9)/7 = 7.000).
+    Con la semántica de grilla del builder, el recalculo coincide con la
+    ventana retrospectiva → sin hallazgo.
+    """
+    daily = _serie_marina_con_hueco()
+    # feature del builder: grilla calendario, shift(1), min_periods=1
+    stored = daily.shift(1).rolling(window=7, min_periods=1, center=False).mean()
+    # frame observado: solo las fechas con fila (el hueco NO trae fila)
+    fechas = daily.dropna().index
+    df = pd.DataFrame({
+        "date": fechas,
+        "raw": daily.loc[fechas].to_numpy(),
+        "rn_feature": stored.loc[fechas].to_numpy(),
+    })
+    assert abs(float(df.loc[df["date"] == "2025-05-09", "rn_feature"].iloc[0]) - 7.0) < 1e-9
+    assert (
+        check_rolling_with_future(df, "date", "raw", "rn_feature", 7, pd.Timestamp("2026-07-28"))
+        is None
+    )
+
+
+def test_rolling_fuga_real_con_hueco_sigue_detectada():
+    """Fuga REAL en serie con hueco (stored = centrada en grilla) → hallazgo."""
+    daily = _serie_marina_con_hueco()
+    stored = daily.rolling(window=7, min_periods=1, center=True).mean()  # leaky
+    fechas = daily.dropna().index
+    df = pd.DataFrame({
+        "date": fechas,
+        "raw": daily.loc[fechas].to_numpy(),
+        "rn_feature": stored.loc[fechas].to_numpy(),
+    })
+    finding = check_rolling_with_future(
+        df, "date", "raw", "rn_feature", 7, pd.Timestamp("2026-07-28")
+    )
+    assert finding is not None
+    assert finding.check == "rolling_includes_future"
+
+
 def test_corrida_falla_no_publica_forecast(tmp_path):
     """3.4: leakage => la corrida falla y no escribe forecast."""
     from src.data.pipeline import forecast_output_path

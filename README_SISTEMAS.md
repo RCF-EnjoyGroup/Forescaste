@@ -36,6 +36,7 @@ SELECT
     SUM(CAST(REPLACE(room_revenue, ',', '.') AS DOUBLE PRECISION)) AS room_revenue
 FROM staging.enjoy_fac_hotel
 WHERE snap_flag = 0
+  AND property_type not like 'MARINA'
   AND COALESCE(ratecode, '') NOT IN ('SYSTEM_ADJUST')
   AND rooms IS NOT NULL
 GROUP BY property, stay_date
@@ -54,6 +55,7 @@ SELECT
     SUM(rooms) AS rooms_booked
 FROM staging.enjoy_fac_hotel
 WHERE snap_flag = 1
+  AND property_type not like 'MARINA'
   AND rooms IS NOT NULL
 GROUP BY property, stay_date, (stay_date - snapshotdate)
 ORDER BY property, stay_date, lead_days;
@@ -78,6 +80,7 @@ SELECT
     business_date,
     SUM(oficial_inventory) AS available_rooms
 FROM public.enjoy_inventory
+WHERE property_type not like 'MARINA'
 GROUP BY property, business_date
 ORDER BY property, business_date;
 ```

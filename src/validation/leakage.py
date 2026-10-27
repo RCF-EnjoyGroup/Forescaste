@@ -189,10 +189,20 @@ def check_rolling_with_future(
     """Feature rolling almacenada que no coincide con la ventana solo-hacia-atrás.
 
     Recalcula la ventana ``window`` sobre ``raw_col`` en dirección pasada
-    (``center=False``, min_periods=1) y en dirección futura/centrada. Si el
-    valor almacenado en ``feature_col`` coincide con la versión futura/centrada
-    y NO con la pasada para fechas ≤ cutoff, la feature incluye observaciones
-    posteriores (lookahead).
+    (``shift(1)``, ``min_periods=1``) y en dirección futura/centrada —
+    **sobre la grilla calendario reindexada**, la MISMA semántica del
+    builder (spec feature-engineering: las features se computan sobre la
+    serie reindexada a frecuencia diaria; los huecos de la fuente son NaN
+    que la ventana salta). Si el valor almacenado en ``feature_col``
+    coincide con la versión futura/centrada y NO con la pasada para
+    fechas ≤ cutoff, la feature incluye observaciones posteriores
+    (lookahead).
+
+    Sin la reindexación, el recalculo por ENTRADAS genera falsos positivos
+    en series con huecos: con un gap, el valor calendario-correcto puede
+    coincidir numéricamente con la ventana centrada por-entradas (caso
+    real: MARINA 2025-05-09 detuvo la corrida del 27-oct por una
+    coincidencia, no por una fuga).
     """
     if df.empty or window <= 1:
         return None
@@ -200,16 +210,39 @@ def check_rolling_with_future(
         return None
     work = df[[date_col, raw_col, feature_col]].copy()
     work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
-    work = work.sort_values(date_col).dropna(subset=[raw_col])
-    raw = pd.to_numeric(work[raw_col], errors="coerce")
-    stored = pd.to_numeric(work[feature_col], errors="coerce")
-    backward = raw.shift(1).rolling(window=window, min_periods=1, center=False).mean()
-    forward = raw.rolling(window=window, min_periods=1, center=True).mean()
-    mask_dates = work[date_col] <= pd.Timestamp(cutoff)
-    ok_back = np.isclose(stored, backward, equal_nan=True)
-    ok_fwd = np.isclose(stored, forward, equal_nan=True)
+    work = work.sort_values(date_col).dropna(subset=[raw_col, date_col])
+    if work.empty:
+        return None
+    # grilla calendario (semántica del builder): deduplicar defensivamente
+    # y reindexar a días — los huecos de la fuente son NaN en la grilla
+    daily_raw = pd.Series(
+        pd.to_numeric(work[raw_col], errors="coerce").to_numpy(dtype=float),
+        index=pd.DatetimeIndex(work[date_col]),
+    )
+    if daily_raw.index.duplicated().any():
+        daily_raw = daily_raw.groupby(level=0).mean()
+    grid = pd.date_range(daily_raw.index.min(), daily_raw.index.max(), freq="D")
+    daily_raw = daily_raw.sort_index().reindex(grid)
+
+    backward = daily_raw.shift(1).rolling(window=window, min_periods=1, center=False).mean()
+    forward = daily_raw.rolling(window=window, min_periods=1, center=True).mean()
+    stored_daily = pd.Series(
+        pd.to_numeric(work[feature_col], errors="coerce").to_numpy(dtype=float),
+        index=pd.DatetimeIndex(work[date_col]),
+    )
+    if stored_daily.index.duplicated().any():
+        stored_daily = stored_daily.groupby(level=0).mean()
+    stored_daily = stored_daily.sort_index().reindex(grid)
+
+    fechas = stored_daily.index
+    stored_vals = stored_daily.to_numpy(dtype=float)
+    back_vals = backward.to_numpy(dtype=float)
+    fwd_vals = forward.to_numpy(dtype=float)
+    mask_dates = (fechas <= pd.Timestamp(cutoff)) & ~np.isnan(stored_vals)
+    ok_back = np.isclose(stored_vals, back_vals, equal_nan=True)
+    ok_fwd = np.isclose(stored_vals, fwd_vals, equal_nan=True)
     bad = mask_dates & ~ok_back & ok_fwd
-    if bad.any():
+    if bool(bad.any()):
         return LeakageFinding(
             check="rolling_includes_future",
             message=(
