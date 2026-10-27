@@ -159,6 +159,13 @@ def check_missing_dates(df: pd.DataFrame, schema: SourceSchema) -> list[QualityI
     Las fechas se parsean con el parser flexible (ISO/DD-MM, spec
     data-ingestion); las presentes pero ilegibles para todo formato se
     reportan como error por grupo — sin crash.
+
+    Solo aplica a series físicas diarias (demanda, capacidad): el pickup
+    es un registro disperso de eventos — una fecha de estancia SIN
+    reservas legítimamente no trae fila, exigirle continuidad diaria
+    genera falsos positivos por diseño (los "faltantes" del pickup eran
+    stays con cero on-the-books). Las fechas ilegibles del pickup SÍ se
+    reportan (eso es higiene de datos, no continuidad).
     """
     issues: list[QualityIssue] = []
     dates = parse_dates_flexible(df[schema.date_col])
@@ -170,6 +177,7 @@ def check_missing_dates(df: pd.DataFrame, schema: SourceSchema) -> list[QualityI
                 records=len(df),
             )
         ]
+    es_pickup = schema.kind is SourceKind.PICKUP
     for prop, grp in df.assign(_date=dates).groupby(schema.property_col, dropna=False):
         if grp["_date"].isna().all():
             issues.append(
@@ -183,6 +191,23 @@ def check_missing_dates(df: pd.DataFrame, schema: SourceSchema) -> list[QualityI
                     properties=(str(prop),),
                 )
             )
+            continue
+        if es_pickup:
+            # pickup: registro disperso — continuidad diaria no aplica
+            # (stays sin reservas no traen fila); solo higiene de fechas
+            ilegibles = int(grp["_date"].isna().sum())
+            if ilegibles:
+                issues.append(
+                    QualityIssue(
+                        check="missing_dates", severity="error",
+                        message=(
+                            f"Propiedad '{prop}': {ilegibles} fechas ilegibles "
+                            "en el pickup (higiene de datos)"
+                        ),
+                        records=ilegibles,
+                        properties=(str(prop),),
+                    )
+                )
             continue
         full = pd.date_range(grp["_date"].min(), grp["_date"].max(), freq="D")
         gaps = full.difference(pd.DatetimeIndex(grp["_date"].dropna().unique()))

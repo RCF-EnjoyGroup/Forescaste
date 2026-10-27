@@ -33,6 +33,13 @@ El sistema SHALL leer la estructura de cada fuente y detectar automáticamente t
 ### Requirement: Validación de calidad de datos
 El sistema SHALL validar antes de entrenar: fechas faltantes, duplicados propiedad/fecha, RN negativos, capacidad negativa, capacidad igual a cero, RN mayores a la capacidad, cambios inesperados de capacidad, periodos históricos ausentes, snapshots duplicados, lead times inválidos o negativos e inconsistencias de pickup. Las filas completamente vacías SHALL reportarse como advertencia de higiene y excluirse de los demás checks sin detener la corrida.
 
+#### Scenario: Continuidad diaria por semántica de fuente
+- **WHEN** se evalúan fechas faltantes en una serie física diaria (demanda, capacidad)
+- **THEN** los huecos dentro del rango propio de cada propiedad se reportan como advertencia
+- **WHEN** se evalúa el pickup (registro disperso de eventos)
+- **THEN** una fecha de estancia sin fila NO se reporta como hueco (un stay sin reservas legítimamente no trae fila)
+- **THEN** las fechas ilegibles del pickup SÍ se reportan como error (higiene de datos aplica a todas las fuentes)
+
 #### Scenario: Detección de duplicados y negativos
 - **WHEN** existen registros duplicados por (propiedad, fecha) o valores negativos de RN/capacidad
 - **THEN** el Data Quality Report registra la cantidad de registros afectados, las propiedades y las fechas involucradas

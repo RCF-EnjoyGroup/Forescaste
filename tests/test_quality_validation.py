@@ -100,6 +100,36 @@ def test_fechas_faltantes_advertencia():
     assert issues[0].dates == ("2026-01-02", "2026-01-03", "2026-01-04")
 
 
+def test_fechas_faltantes_pickup_es_disperso_no_advierte():
+    """El pickup es un registro de eventos: stays sin reservas no traen fila.
+
+    Exigirle continuidad diaria generaba falsos positivos por diseño (los
+    '332 faltantes' de VILLAS eran fechas con cero on-the-books). Solo se
+    reporta la higiene (fechas ilegibles), no los días vacíos.
+    """
+    rows = [
+        ("corin", "2026-01-01", 10, 30),   # con reservas
+        ("corin", "2026-01-03", 20, 10),   # gap: el 2 sin reservas — LEGITIMO
+        ("corin", "2026-01-10", 100, 3),   # más gaps — legítimos
+    ]
+    df = pd.DataFrame(rows, columns=["property", "date", "lead_days", "pickup_rn"])
+    issues = check_missing_dates(df, _pick(df))
+    assert issues == [], "días sin reservas en el pickup NO son huecos de calidad"
+
+
+def test_fechas_ilegibles_pickup_si_reportan():
+    """Higiene de fechas aplica a TODAS las fuentes, incluido el pickup."""
+    rows = [
+        ("corin", "2026-01-01", 10, 30),
+        ("corin", "31-31-2026", 20, 10),   # ilegible para todo formato
+    ]
+    df = pd.DataFrame(rows, columns=["property", "date", "lead_days", "pickup_rn"])
+    issues = check_missing_dates(df, _pick(df))
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert "ilegibles" in issues[0].message
+
+
 def test_cambio_capacidad_advertencia():
     df = _capacity(
         [
