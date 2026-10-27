@@ -137,8 +137,13 @@ def main(out_path: str | None = None) -> int:
                     pron = float(fc)
                     nota = ""
                 real = reales.get((prop, ym))
+                fin_mes = ym.to_timestamp(how="end").normalize()
                 if pd.isna(real):
                     real_val, nota = None, (nota + " · mes sin reales completos").strip(" ·")
+                elif fin_mes > ultimo_real:
+                    # mes en curso con reales parciales: honestar el corte
+                    real_val = float(real)
+                    nota = (nota + f" · reales parciales al {ultimo_real.date()}").strip(" ·")
                 else:
                     real_val = float(real)
                 rows.append({
