@@ -102,6 +102,21 @@ monitoring:
     min_obs: 20
     shrinkage: 30
     max_rel: 0.30
+    # Celdas estacionales de calibracion: ademas de
+    # (propiedad, banda de lead), el bias del punto y la amplitud de la
+    # banda se estiman por (propiedad, banda, temporada del stay)
+    # high/shoulder/low (calendario = dimension conocible a-priori, sin
+    # lookahead). Evidencia abierta: FIESTA -13.5% de sesgo en el regimen
+    # ago-oct con el gate por banda bloqueado (consistencia 50% entre
+    # estaciones) y cobertura de banda 42.2% (51/90 reales sobre p90) en
+    # 4 corridas consecutivas. Default fijado por el A/B del 30-oct
+    # (openspec 2026-10-30-seasonal-calibration-cells): NEGATIVO — con el
+    # knob activo la cobertura del horizonte EMPEORÓ (FIESTA 42.2%→23.3%,
+    # CORIN −12.2pp, WMAPE global 0.1767→0.1817): el sesgo de FIESTA es
+    # drift de nivel YoY (anomalía del año en curso sobre-pronosticada a
+    # la baja por la data del año previo), no bias estacional recurrente.
+    # La maquinaria queda disponible como knob con evidencia documentada.
+    seasonal_cells: false
   # Bandas de referencia de la INDUSTRIA para juzgar el WMAPE por horizonte
   # (perfil resort/estacional del portafolio). Fuente: HospitalityOS,
   # "Hotel Forecast Accuracy Benchmarking" (2026-09), compilado de

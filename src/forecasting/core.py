@@ -669,9 +669,11 @@ def operative_residual_bands(
     model_by_property: dict[str, str],
     blend_by_property: dict[str, dict],
     dem: pd.DataFrame,
-    bias_factors: dict[tuple[str, str], float] | None = None,
+    bias_factors: dict | None = None,
     recency_decay: float = 1.0,
-) -> dict[tuple[str, str], pd.DataFrame]:
+    seasonal_cells: bool = False,
+    fallback_factors: dict | None = None,
+) -> dict:
     """Residuos del forecast OPERATIVO por (propiedad, banda de lead).
 
     Ensambla por fold el forecast que opera en producción — campeón con
@@ -686,6 +688,12 @@ def operative_residual_bands(
     el pipeline completo que se publica (punto corregido + banda), no una
     versión intermedia.
 
+    Con ``seasonal_cells=True`` la agrupación pasa a
+    (propiedad, banda, temporada del stay) y el factor por fila se
+    resuelve con la misma composición del punto (estacional aplicable →
+    banda → 1.0): la banda calibra exactamente el pipeline que se
+    publica, fila a fila.
+
     Con ``recency_decay < 1.0`` los residuos salen como DataFrame
     ``(residual, weight)`` con peso ``decay^(edad del fold)``: en un
     portafolio en transición de régimen, el trimestre reciente describe
@@ -693,7 +701,7 @@ def operative_residual_bands(
     ponderan (``build_intervals``). ``1.0`` emite pesos uniformes
     (equivalente al comportamiento sin ponderación).
     """
-    from src.evaluation.breakdowns import lead_band
+    from src.evaluation.breakdowns import lead_band, season_of_stay
 
     frame = _operative_forecast_frame(
         fold_predictions, model_by_property, blend_by_property, dem
@@ -702,6 +710,8 @@ def operative_residual_bands(
         return {}
     work = frame.copy()
     work["lead_band"] = work["lead_days"].map(lead_band)
+    if seasonal_cells:
+        work["season"] = season_of_stay(work["stay_date"]).fillna("__sin_temporada__")
     # edad del fold: el más reciente (máximo índice) pesa 1.0, el anterior
     # decay, y así hacia atrás — los folds tesian el año previo al corte
     max_fold = int(work["fold"].max()) if "fold" in work.columns else 0
@@ -709,16 +719,59 @@ def operative_residual_bands(
     work["weight"] = decay ** (max_fold - pd.to_numeric(work["fold"], errors="coerce").fillna(0))
     work["weight"] = work["weight"].fillna(1.0)
 
-    out: dict[tuple[str, str], pd.DataFrame] = {}
-    for (prop, band), grp in work.groupby(["property", "lead_band"], observed=True):
-        factor = float((bias_factors or {}).get((str(prop), str(band)), 1.0))
+    if seasonal_cells and bias_factors:
+        # factor por fila con la MISMA composición que el punto: clave
+        # estacional → fallback de banda → 1.0
+        fkeys = list(bias_factors.keys())
+        seasonal = all(isinstance(k, tuple) and len(k) == 3 for k in fkeys)
+        band_facts = dict(fallback_factors or {}) if seasonal else {}
+
+        def _factor_row(prop: str, band: str, season: str) -> float:
+            if seasonal:
+                f = bias_factors.get((prop, band, season))
+                if f is not None:
+                    return float(f)
+                return float(band_facts.get((prop, band), 1.0))
+            return float((bias_factors or {}).get((prop, band), 1.0))
+
+        if seasonal:
+            work["factor"] = [
+                _factor_row(str(p), str(b), str(s))
+                for p, b, s in zip(
+                    work["property"].astype(str),
+                    work["lead_band"].astype(str),
+                    work["season"].astype(str), strict=True)
+            ]
+        else:
+            work["factor"] = [
+                _factor_row(str(p), str(b), "")
+                for p, b in zip(work["property"].astype(str),
+                                work["lead_band"].astype(str), strict=True)
+            ]
+    else:
+        # sin celdas estacionales: un solo factor por (prop, banda)
+        flat = {
+            (str(p), str(b)): float(f) for (p, b), f in (bias_factors or {}).items()
+        }
+        work["factor"] = [
+            float(flat.get((str(p), str(b)), 1.0))
+            for p, b in zip(work["property"].astype(str),
+                            work["lead_band"].astype(str), strict=True)
+        ]
+
+    group_cols = (
+        ["property", "lead_band", "season"] if seasonal_cells
+        else ["property", "lead_band"]
+    )
+    out: dict = {}
+    for keys, grp in work.groupby(group_cols, observed=True):
         cell = pd.DataFrame({
-            "residual": grp["forecast"] * factor - grp["actual"],
+            "residual": grp["forecast"] * grp["factor"] - grp["actual"],
             "weight": grp["weight"],
         }).dropna(subset=["residual"])
         if cell.empty:
             continue
-        out[(str(prop), str(band))] = cell.reset_index(drop=True)
+        out[keys if len(keys) > 1 else keys[0]] = cell.reset_index(drop=True)
     return out
 
 
@@ -733,7 +786,8 @@ def lead_bias_factors(
     max_rel: float = 0.30,
     min_correction: float = 0.005,
     min_consistency: float = 0.75,
-) -> tuple[dict[tuple[str, str], float], dict]:
+    seasonal_cells: bool = False,
+) -> tuple[dict, dict]:
     """Corrección de bias por (propiedad, banda de lead) — evidencia de folds.
 
     El backtest operativo documenta sobre-pronóstico sistemático a leads
@@ -756,14 +810,28 @@ def lead_bias_factors(
     - celdas con < ``min_obs`` observaciones y correcciones < 0.5% no
       tocan el punto (ruido, no evidencia).
 
+    Con ``seasonal_cells=True`` además se estima por
+    **(propiedad, banda, temporada del stay)** (high/shoulder/low por
+    calendario — dimensión conocible a-priori): la celda estacional lleva
+    la MISMA disciplina de gates, y el factor final compone con fallback
+    honesto (celda estacional aplicable → celda (prop, banda) → 1.0). El
+    caso real que motiva esto: FIESTA pronosticaba −13.5% abajo en el
+    régimen del horizonte mientras el gate por banda bloqueaba la
+    corrección porque el sesgo gira ENTRE estaciones (consistencia 50%) —
+    el sesgo dentro de UNA temporada sí es consistente. Los llaves del
+    dict devuelto son 3-tuplas ``(prop, banda, temporada)`` y el reporte
+    incluye ``band_factors`` (2-tuplas) como fallback documentado para
+    combinaciones estacionales sin filas en los folds.
+
     Returns
     -------
-    (factors, report): factores por (propiedad, banda) y detalle por
-    celda (n, bias relativo, consistencia, factor) para el manifiesto.
+    (factors, report): factores por (propiedad, banda) — o 3-tuplas con
+    ``seasonal_cells`` — y detalle por celda (n, bias relativo,
+    consistencia, factor) para el manifiesto.
     """
-    from src.evaluation.breakdowns import lead_band
+    from src.evaluation.breakdowns import lead_band, season_of_stay
 
-    factors: dict[tuple[str, str], float] = {}
+    factors: dict = {}
     frame = _operative_forecast_frame(
         fold_predictions, model_by_property, blend_by_property, dem
     )
@@ -773,75 +841,149 @@ def lead_bias_factors(
     work["lead_band"] = work["lead_days"].map(lead_band)
 
     cells: list[dict] = []
+    band_factors: dict[tuple[str, str], float] = {}
     n_corrected = 0
     for (prop, band), grp in work.groupby(["property", "lead_band"], observed=True):
-        n = int(len(grp))
-        denom = float(grp["actual"].abs().sum())
-        if n < min_obs or denom <= 0:
-            cells.append(
-                {"property": str(prop), "lead_band": str(band), "n_obs": n,
-                 "rel_bias": None, "consistency": None, "factor": 1.0,
-                 "applied": False, "reason": f"n<{min_obs} o sin reales"}
-            )
-            continue
-        rel = float((grp["forecast"] - grp["actual"]).sum() / denom)
-        # consistencia del signo del bias entre folds (estabilidad del
-        # sesgo): un sesgo que gira entre ventanas es régimen, no bias
-        fold_biases = (
-            grp.groupby("fold")
-            .apply(lambda g: float((g["forecast"] - g["actual"]).sum()
-                                   / g["actual"].abs().sum()), include_groups=False)
-            if "fold" in grp.columns and grp["fold"].nunique() > 1
-            else None
+        result = _bias_cell_estimate(
+            grp, min_obs=min_obs, shrinkage=shrinkage, max_rel=max_rel,
+            min_correction=min_correction, min_consistency=min_consistency,
         )
-        consistency = None
-        if fold_biases is not None and len(fold_biases.dropna()) > 0:
-            agg_sign = 1 if rel > 0 else -1
-            signs = fold_biases.dropna().map(lambda v: 1 if v > 0 else -1)
-            consistency = float((signs == agg_sign).mean())
-        if consistency is not None and consistency < min_consistency:
-            cells.append(
-                {"property": str(prop), "lead_band": str(band), "n_obs": n,
-                 "rel_bias": rel, "consistency": consistency, "factor": 1.0,
-                 "applied": False,
-                 "reason": (
-                     f"sesgo inestable entre folds (consistencia "
-                     f"{consistency:.0%} < {min_consistency:.0%})"
-                 )}
-            )
-            continue
-        raw = float(np.clip(1.0 - rel, 1.0 - max_rel, 1.0 + max_rel))
-        weight = n / (n + shrinkage)
-        factor = 1.0 + (raw - 1.0) * weight
-        applied = abs(factor - 1.0) >= min_correction
-        if not applied:
-            factor = 1.0
-        else:
+        if result["applied"]:
             n_corrected += 1
-        factors[(str(prop), str(band))] = factor
+            band_factors[(str(prop), str(band))] = result["factor"]
+        # contratos rincon: solo celdas con gates pasados entran al dict
+        # (los callers tratan "sin llave" como factor 1.0)
+        if result["reason"] is None:
+            factors[(str(prop), str(band))] = result["factor"]
         cells.append(
-            {"property": str(prop), "lead_band": str(band), "n_obs": n,
-             "rel_bias": rel, "consistency": consistency, "factor": factor,
-             "applied": applied}
+            {"property": str(prop), "lead_band": str(band), **_cell_public(result)}
         )
-    return factors, {
+
+    if not seasonal_cells:
+        return factors, {
+            "n_cells": len(cells),
+            "n_corrected": n_corrected,
+            "min_obs": min_obs,
+            "shrinkage": shrinkage,
+            "max_rel": max_rel,
+            "min_consistency": min_consistency,
+            "cells": cells,
+        }
+
+    # ----- celdas estacionales: el régimen del que el gate por banda
+    # desconfía, aislado. El sesgo FIESTA −13.5% del horizonte ago-oct
+    # era inconsistente ENTRE estaciones y consistente DENTRO de una.
+    work["season"] = season_of_stay(work["stay_date"])
+    season_cells: list[dict] = []
+    composed: dict[tuple[str, str, str], float] = {}
+    n_season_cells = 0
+    for (prop, band, season), grp in work.groupby(
+        ["property", "lead_band", "season"], observed=True
+    ):
+        est = _bias_cell_estimate(
+            grp, min_obs=min_obs, shrinkage=shrinkage, max_rel=max_rel,
+            min_correction=min_correction, min_consistency=min_consistency,
+        )
+        band_factor = float(band_factors.get((str(prop), str(band)), 1.0))
+        if est["applied"]:
+            final, source = float(est["factor"]), "season"
+            n_season_cells += 1
+        elif band_factor != 1.0:
+            final, source = band_factor, "band"
+        else:
+            final, source = 1.0, "none"
+        composed[(str(prop), str(band), str(season))] = final
+        season_cells.append(
+            {"property": str(prop), "lead_band": str(band), "season": str(season),
+             "band_factor": band_factor,
+             **_cell_public(est), "factor": final, "source": source}
+        )
+    return composed, {
         "n_cells": len(cells),
         "n_corrected": n_corrected,
+        "n_season_cells": n_season_cells,
         "min_obs": min_obs,
         "shrinkage": shrinkage,
         "max_rel": max_rel,
         "min_consistency": min_consistency,
         "cells": cells,
+        "season_cells": season_cells,
+        "band_factors": band_factors,
     }
+
+
+def _bias_cell_estimate(
+    grp: pd.DataFrame,
+    *,
+    min_obs: int,
+    shrinkage: int,
+    max_rel: float,
+    min_correction: float,
+    min_consistency: float,
+) -> dict:
+    """Estimador de UNA celda de bias (banda o estacional) con sus gates.
+
+    Cuerpo compartido del estimador de ``lead_bias_factors``: celdas
+    (propiedad, banda) y (propiedad, banda, temporada) aplican la MISMA
+    disciplina de evidencia — ``rel_bias`` por grupo, consistencia del
+    signo entre folds, shrinkage por tamaño de muestra, clip y umbral
+    mínimo de corrección. Devuelve SIEMPRE el detalle (aplicado o la
+    razón del bloqueo) — nada silencioso.
+    """
+    n = int(len(grp))
+    denom = float(grp["actual"].abs().sum())
+    if n < min_obs or denom <= 0:
+        return {"n_obs": n, "rel_bias": None, "consistency": None,
+                "factor": 1.0, "applied": False,
+                "reason": f"n<{min_obs} o sin reales", "en_gates": False}
+    rel = float((grp["forecast"] - grp["actual"]).sum() / denom)
+    # consistencia del signo del bias entre folds (estabilidad del
+    # sesgo): un sesgo que gira entre ventanas es régimen, no bias
+    fold_biases = (
+        grp.groupby("fold")
+        .apply(lambda g: float((g["forecast"] - g["actual"]).sum()
+                               / g["actual"].abs().sum()), include_groups=False)
+        if "fold" in grp.columns and grp["fold"].nunique() > 1
+        else None
+    )
+    consistency = None
+    if fold_biases is not None and len(fold_biases.dropna()) > 0:
+        agg_sign = 1 if rel > 0 else -1
+        signs = fold_biases.dropna().map(lambda v: 1 if v > 0 else -1)
+        consistency = float((signs == agg_sign).mean())
+    if consistency is not None and consistency < min_consistency:
+        return {"n_obs": n, "rel_bias": rel, "consistency": consistency,
+                "factor": 1.0, "applied": False,
+                "reason": (
+                    f"sesgo inestable entre folds (consistencia "
+                    f"{consistency:.0%} < {min_consistency:.0%})"
+                ), "en_gates": False}
+    raw = float(np.clip(1.0 - rel, 1.0 - max_rel, 1.0 + max_rel))
+    weight = n / (n + shrinkage)
+    factor = 1.0 + (raw - 1.0) * weight
+    applied = abs(factor - 1.0) >= min_correction
+    if not applied:
+        factor = 1.0
+    return {"n_obs": n, "rel_bias": rel, "consistency": consistency,
+            "factor": float(factor), "applied": bool(applied),
+            "reason": None, "en_gates": True}
+
+
+def _cell_public(est: dict) -> dict:
+    """Detalle público de una celda de bias para el manifiesto."""
+    return {"n_obs": est["n_obs"], "rel_bias": est["rel_bias"],
+            "consistency": est["consistency"], "factor": est["factor"],
+            "applied": est["applied"], "reason": est["reason"]}
 
 
 def apply_bias_factors(
     frame: pd.DataFrame,
-    factors: dict[tuple[str, str], float] | None,
+    factors: dict | None,
     *,
     property_col: str = "property",
     lead_col: str = "lead_days",
     target_col: str = "raw_forecast_rn",
+    fallback_factors: dict[tuple[str, str], float] | None = None,
 ) -> pd.DataFrame:
     """Aplica la corrección por (propiedad, banda) al forecast publicado.
 
@@ -849,23 +991,60 @@ def apply_bias_factors(
     de capacidad (las restricciones se re-aplican después): una corrección
     a la baja jamás publica menos que lo ya reservado, y una al alza
     jamás supera el inventario.
+
+    Con llaves 3-tuplas ``(prop, banda, temporada)`` (modo estacional) la
+    temporada de cada fila sale del calendario del stay (sin lookahead) y
+    una combinación estacional sin clave cae al ``fallback_factors`` de
+    banda si existe — nunca se inventa un factor fuera del reporte.
     """
     if not factors or frame is None or frame.empty:
         return frame
     if target_col not in frame.columns or lead_col not in frame.columns:
         return frame
-    from src.evaluation.breakdowns import lead_band
+    from src.evaluation.breakdowns import lead_band, season_of_stay
 
+    seasonal = all(isinstance(k, tuple) and len(k) == 3 for k in factors)
     out = frame.copy()
     bands = out[lead_col].map(lead_band)
     props = out[property_col].astype(str)
+    if seasonal:
+        date_key = "stay_date" if "stay_date" in out.columns else None
+        if date_key is None:
+            raise ValueError(
+                "factors estacional requiere la columna de fecha de estancia"
+            )
+        seasons = season_of_stay(out[date_key]).fillna("__sin_temporada__")
     factor = pd.Series(1.0, index=out.index)
-    for (prop, band), f in factors.items():
-        if float(f) == 1.0:
-            continue
-        mask = (props == str(prop)) & (bands == str(band))
+    llave_presente = pd.Series(False, index=out.index)
+    for key, f in factors.items():
+        if seasonal:
+            prop, band, season = key
+            mask = (props == str(prop)) & (bands == str(band)) & (seasons == str(season))
+        else:
+            prop, band = key
+            mask = (props == str(prop)) & (bands == str(band))
         if mask.any():
-            factor.loc[mask] = float(f)
+            if float(f) != 1.0:
+                factor.loc[mask] = float(f)
+            llave_presente[mask] = True
+    if seasonal and fallback_factors:
+        # SOLO combinaciones estacionales sin filas en los folds (llave
+        # ausente del dict) heredan el factor de banda; las filas con
+        # llave estacional presente ya fueron decididas por el estimador
+        # con su fallback interno — re-aplicar la banda sería doble conteo
+        con_clave = llave_presente.reindex(out.index, fill_value=False)
+        applied_fallback = 0
+        for (prop, band), f in fallback_factors.items():
+            if float(f) == 1.0:
+                continue
+            missing = (
+                (props == str(prop)) & (bands == str(band)) & ~con_clave
+            )
+            if missing.any():
+                factor.loc[missing] = float(f)
+                applied_fallback += int(missing.sum())
+        if applied_fallback:
+            out.attrs["bias_fallback_records"] = applied_fallback
     out[target_col] = pd.to_numeric(out[target_col], errors="coerce") * factor
     out["bias_correction_factor"] = factor
     return out

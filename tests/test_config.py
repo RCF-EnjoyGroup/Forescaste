@@ -83,3 +83,25 @@ def test_horizonte_invalido_falla(tmp_path):
         assert "positivo" in str(exc)
     else:
         raise AssertionError("horizon_days=0 debió fallar")
+
+
+def test_knob_seasonal_cells_vive_bajo_bias_correction():
+    """Regresión del A/B del 30-oct: el knob quedó insertado como hermano
+    de ``bias_correction`` (valor no leído por el runner) y la primera
+    re-corrida fue visualmente idéntica al baseline — experimento nulo.
+    La llave TIENE que vivir en ``monitoring.bias_correction.seasonal_cells``.
+    """
+    import yaml as _yaml
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    raw = _yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))
+    mon = raw.get("monitoring") or {}
+    bc = mon.get("bias_correction") or {}
+    assert isinstance(bc.get("seasonal_cells"), bool), (
+        "seasonal_cells debe ser booleano dentro de monitoring.bias_correction"
+    )
+    assert "seasonal_cells" not in {k: v for k, v in mon.items()
+                                    if k != "bias_correction"}, (
+        "no debe existir una llave seasonal_cells fuera de bias_correction"
+    )

@@ -16,6 +16,25 @@ from src.evaluation.metrics import MetricResult, compute_metrics
 LEAD_BINS = [-np.inf, 2, 6, 13, 29, 59, 89, np.inf]
 LEAD_LABELS = ["1-2", "3-6", "7-13", "14-29", "30-59", "60-89", "90+"]
 
+SEASON_MAP = {
+    12: "high", 1: "high", 2: "high",
+    3: "shoulder", 4: "shoulder", 5: "shoulder",
+    10: "shoulder", 11: "shoulder",
+    6: "low", 7: "low", 8: "low", 9: "low",
+}
+
+
+def season_of_stay(dates: pd.Series) -> pd.Series:
+    """Temporada del stay por calendario (high/shoulder/low).
+
+    Fuente única de la definición (compartida con el desglose de
+    estacionalidad del reporte): 12/1/2 high, 3/4/5/10/11 shoulder,
+    6-9 low. Dimensión conocible a-priori (solo calendario, sin
+    lookahead) — alimenta las celdas estacionales de calibración de
+    banda y bias.
+    """
+    return pd.to_datetime(pd.Series(dates), errors="coerce").dt.month.map(SEASON_MAP)
+
 
 def lead_band(lead_days) -> str:
     """Asigna una banda de lead a una observación (exactamente una)."""
@@ -250,11 +269,7 @@ def metrics_by_seasonality(
     work["_dow"] = dates.dt.dayofweek
     work["_weekend"] = np.where(work["_dow"] >= 5, "weekend", "weekday")
     work["_season"] = pd.Categorical(
-        dates.dt.month.map(
-            {12: "high", 1: "high", 2: "high", 3: "shoulder", 4: "shoulder",
-             5: "shoulder", 6: "low", 7: "low", 8: "low", 9: "low",
-             10: "shoulder", 11: "shoulder"}
-        ),
+        dates.dt.month.map(SEASON_MAP),
         categories=["high", "shoulder", "low"],
         ordered=True,
     )

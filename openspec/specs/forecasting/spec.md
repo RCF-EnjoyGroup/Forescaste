@@ -188,6 +188,13 @@ El sistema SHALL generar P10, P50 y P90 (o lower/forecast/upper) siempre que el 
 - **THEN** celdas con menos observaciones que el mínimo y correcciones inmateriales no se tocan
 - **THEN** el factor aplicado viaja en el dataset publicado (`bias_correction_factor`) y el detalle por celda en el manifiesto
 
+#### Scenario: Calibración estacional bajo knob (default OFF)
+- **WHEN** `bias_correction.seasonal_cells` está activo
+- **THEN** la amplitud de la banda y la corrección de bias del punto se estiman por (propiedad, banda de lead, temporada del stay), usando la MISMA definición de temporada del desglose de estacionalidad (high/shoulder/low) — dimensión conocible a-priori por calendario, sin lookahead
+- **THEN** una celda estacional sin evidencia suficiente cae a la celda (propiedad, banda) o a la escalera documentada — cada fallback queda registrado
+- **THEN** con `seasonal_cells: false` (default) el sistema calibra exactamente como antes y las bandas son bit a bit idénticas
+- **THEN** el default OFF quedó fijado por el A/B del 2026-10-30: activado, la cobertura del horizonte empeoró (FIESTA 42.2%→23.3%, CORIN −12.2pp) — el sesgo del horizonte era drift de nivel YoY, no bias estacional recurrente, y la calibración del año previo corrigió en dirección contraria
+
 #### Scenario: Cobertura de banda monitoreada
 - **WHEN** la cobertura empírica de una propiedad se desvía más de 7.5 puntos del nominal con n suficiente
 - **THEN** el monitoreo emite una alerta de banda mal calibrada por propiedad

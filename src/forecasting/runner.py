@@ -145,7 +145,10 @@ def _merge_keep_index(left: pd.DataFrame, right: pd.DataFrame, on: list[str]) ->
 def _jsonable(obj: Any) -> Any:
     """Convierte NaN/inf a None para un JSON estrictamente válido."""
     if isinstance(obj, dict):
-        return {k: _jsonable(v) for k, v in obj.items()}
+        return {
+            (str(k) if isinstance(k, tuple) else k): _jsonable(v)
+            for k, v in obj.items()
+        }
     if isinstance(obj, (list, tuple)):
         return [_jsonable(v) for v in obj]
     if isinstance(obj, float) and not np.isfinite(obj):
@@ -848,13 +851,20 @@ def run_end_to_end(
     # y se aplica al punto ANTES de piso/techo. Sin fold_predictions la
     # corrección es vacía (corridas de muestra quedan idénticas).
     bias_cfg = dict((config.monitoring or {}).get("bias_correction") or {})
+    seasonal_cells = bool(bias_cfg.get("seasonal_cells", False))
     bias_factors, bias_report = lead_bias_factors(
         fold_predictions, model_by_property, blend_by_property, history,
         min_obs=int(bias_cfg.get("min_obs", 20)),
         shrinkage=int(bias_cfg.get("shrinkage", 30)),
         max_rel=float(bias_cfg.get("max_rel", 0.30)),
+        seasonal_cells=seasonal_cells,
     )
-    raw = apply_bias_factors(raw, bias_factors)
+    raw = apply_bias_factors(
+        raw, bias_factors,
+        fallback_factors=(
+            dict(bias_report.get("band_factors") or {}) if seasonal_cells else None
+        ),
+    )
 
     # cold start: propiedades con < 365d de histórico (p. ej. apertura
     # reciente) — forecast provisional, documentado en el manifiesto
@@ -901,6 +911,10 @@ def run_end_to_end(
         fold_predictions, model_by_property, blend_by_property, history,
         bias_factors=bias_factors,
         recency_decay=float((config.monitoring or {}).get("interval_recency_decay", 0.7)),
+        seasonal_cells=seasonal_cells,
+        fallback_factors=(
+            dict(bias_report.get("band_factors") or {}) if seasonal_cells else None
+        ),
     )
     residuals_provided = bool(residual_bands) and len(residuals_flat) > 0
     if operative_bands:

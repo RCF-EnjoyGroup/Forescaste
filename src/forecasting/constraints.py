@@ -392,14 +392,90 @@ def build_intervals(
     notes: list[str] = []
 
     if residual_bands:
-        from src.evaluation.breakdowns import lead_band
+        from src.evaluation.breakdowns import lead_band, season_of_stay
 
         prop_aware = (
             property_col is not None
             and property_col in out.columns
             and all(isinstance(k, tuple) for k in residual_bands)
         )
-        if prop_aware:
+        season_aware = prop_aware and all(len(k) == 3 for k in residual_bands)
+        if season_aware and "stay_date" not in out.columns:
+            raise ValueError(
+                "residuos estacionales requieren la columna de fecha de estancia"
+            )
+        if season_aware:
+            # pools de la escalera estacional: celda (p,b,s) → (p,b) →
+            # prop → banda → global. La temporada ya era conocible
+            # a-priori por calendario; las celdas pueden traer pesos de
+            # recencia (DataFrame residual/weight) o ser Series sin peso
+            # — el pooling preserva los pesos
+            cell_pool: dict[tuple[str, str], list[tuple[np.ndarray, np.ndarray | None]]] = {}
+            prop_pool: dict[str, list[tuple[np.ndarray, np.ndarray | None]]] = {}
+            band_pool: dict[str, list[tuple[np.ndarray, np.ndarray | None]]] = {}
+            all_res: list[tuple[np.ndarray, np.ndarray | None]] = []
+            for (p, b, s), res in residual_bands.items():
+                vals, weights = _cell_values(res)
+                if len(vals) == 0:
+                    continue
+                cell_pool.setdefault((str(p), str(b)), []).append((vals, weights))
+                prop_pool.setdefault(str(p), []).append((vals, weights))
+                band_pool.setdefault(str(b), []).append((vals, weights))
+                all_res.append((vals, weights))
+
+            def _pool_concat(cells: list[tuple[np.ndarray, np.ndarray | None]]):
+                vals = np.concatenate([c[0] for c in cells]) if cells else np.array([])
+                if any(c[1] is not None for c in cells):
+                    w = np.concatenate([
+                        c[1] if c[1] is not None else np.ones(len(c[0]))
+                        for c in cells
+                    ])
+                    return vals, w
+                return vals, None
+
+            row_bands = (
+                out[lead_col].map(lead_band).to_numpy()
+                if lead_col in out.columns
+                else np.full(len(out), "__global__", dtype=object)
+            )
+            row_props = out[property_col].astype(str).to_numpy()
+            row_seasons = (
+                season_of_stay(out["stay_date"]).fillna("__sin_temporada__").to_numpy()
+            )
+
+            shift_cache: dict[tuple[str, str, str], tuple[float, float]] = {}
+            escalera: set[str] = set()
+            for i, (p, b, s) in enumerate(zip(row_props, row_bands, row_seasons, strict=True)):
+                key = (str(p), str(b), str(s))
+                if key not in shift_cache:
+                    res = residual_bands.get(key)
+                    vals, weights = _cell_values(res) if res is not None else (np.array([]), None)
+                    lvl_pb = cell_pool.get((key[0], key[1]))
+                    lvl_prop = prop_pool.get(key[0])
+                    lvl_band = band_pool.get(key[1])
+                    if len(vals) >= min_residuals:
+                        shift_cache[key] = _shifts(res)
+                    elif lvl_pb is not None and sum(len(c[0]) for c in lvl_pb) >= min_residuals:
+                        shift_cache[key] = _shifts(_pool_concat(lvl_pb))
+                        escalera.add(f"pool_propiedad_banda:{key[0]},{key[1]}")
+                    elif lvl_prop is not None and sum(len(c[0]) for c in lvl_prop) >= min_residuals:
+                        shift_cache[key] = _shifts(_pool_concat(lvl_prop))
+                        escalera.add(f"pool_propiedad:{key[0]}")
+                    elif lvl_band is not None and sum(len(c[0]) for c in lvl_band) >= min_residuals:
+                        shift_cache[key] = _shifts(_pool_concat(lvl_band))
+                        escalera.add(f"pool_banda:{key[1]}")
+                    else:
+                        shift_cache[key] = _shifts(_pool_concat(all_res))
+                        escalera.add("pool_global")
+                lo, hi = shift_cache[key]
+                p10[i] = p10[i] + lo
+                p90[i] = p90[i] + hi
+            if escalera:
+                notes.append(
+                    f"celdas (propiedad, banda, temporada) sin evidencia propia heredan "
+                    f"la escalera estacional: {sorted(escalera)}"
+                )
+        elif prop_aware:
             # pools de la escalera: (prop, banda) -> prop -> banda -> global
             # las celdas pueden traer pesos de recencia (DataFrame residual/
             # weight) o ser Series sin peso — el pooling preserva los pesos
