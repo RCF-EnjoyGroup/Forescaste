@@ -1050,6 +1050,145 @@ def apply_bias_factors(
     return out
 
 
+def level_correction_factors(
+    detail: pd.DataFrame | None,
+    *,
+    trigger_ts: float = 4.0,
+    window_days: int = 60,
+    min_obs: int = 10,
+    shrinkage: int = 10,
+    max_rel: float = 0.20,
+    min_correction: float = 0.005,
+) -> tuple[dict[str, float], dict]:
+    """Corrección de nivel por propiedad — drift del forecast PUBLICADO.
+
+    Los folds del backtest mezclan regímenes del año y sus gates (con
+    razón) bloquean sesgos que giran entre ventanas; un drift de nivel
+    RECIENTE (el boom YoY de FIESTA, el cambio de régimen de VILLAS) no
+    es un bias del año: es el régimen de las últimas semanas. La señal
+    honesta es el error del forecast que el negocio ya vio: el detalle
+    forecast-vs-real de la publicación anterior (``vintage_detail``),
+    walk-forward puro — cada corrección usa solo información ≤ su corte.
+
+    Sobre la ventana reciente de estancias (``window_days``) por propiedad:
+
+    - ``rel = Σ(fc − act) / Σ|act|`` — magnitud y signo del desvío;
+    - ``ts = Σerr / media|err|`` — la tracking signal del monitoreo,
+      acotada por tamaño de muestra por construcción;
+    - **peso suave** ``w = min(|ts|/trigger, 1)``: sin estado, sin
+      parpadeo alrededor del umbral — a TS=4 corrige completo, a TS=2 a
+      medias; el control fino lo da el shrinkage, no un interruptor;
+    - **disciplina**: shrinkage ``n/(n+shrinkage)``, clip ``±max_rel``,
+      ``min_obs`` para estimar y correcciones < ``min_correction`` no
+      tocan el punto.
+
+    Returns
+    -------
+    (factors, report): factor por propiedad (solo las aplicadas; callers
+    tratan "sin llave" como 1.0) y el detalle completo por propiedad
+    (n, rel, ts, peso, factor, razón) para el manifiesto — nada
+    silencioso.
+    """
+    factors: dict[str, float] = {}
+    report: dict = {
+        "trigger_ts": trigger_ts,
+        "window_days": window_days,
+        "min_obs": min_obs,
+        "shrinkage": shrinkage,
+        "max_rel": max_rel,
+        "properties": [],
+    }
+    if detail is None or detail.empty:
+        report["note"] = "sin errores publicados evaluables"
+        return factors, report
+
+    work = detail.copy()
+    work["stay_date"] = pd.to_datetime(work["stay_date"], errors="coerce")
+    work = work.dropna(subset=["stay_date"])
+    if work.empty:
+        report["note"] = "sin fechas de estancia"
+        return factors, report
+    fin = pd.Timestamp(work["stay_date"].max())
+    inicio = fin - pd.Timedelta(days=int(window_days))
+    win = work.loc[
+        (work["stay_date"] > inicio) & (work["stay_date"] <= fin)
+    ].copy()
+    report["window"] = {"start": str(inicio.date()), "end": str(fin.date())}
+    if win.empty:
+        report["note"] = f"sin estancias en la ventana de {window_days} dias"
+        return factors, report
+
+    for prop, grp in win.groupby("property", observed=True):
+        n = int(len(grp))
+        fc = pd.to_numeric(grp["published_forecast_rn"], errors="coerce")
+        act = pd.to_numeric(grp["actual_rn"], errors="coerce")
+        ok = fc.notna() & act.notna()
+        n = int(ok.sum())
+        cell: dict = {"property": str(prop), "n_obs": n,
+                      "window_days": int(window_days)}
+        if n < min_obs:
+            cell.update({"rel_error": None, "ts": None, "weight": 0.0,
+                         "factor": 1.0, "applied": False,
+                         "reason": f"n<{min_obs} en la ventana"})
+            report["properties"].append(cell)
+            continue
+        f_, a_ = fc[ok].to_numpy(dtype=float), act[ok].to_numpy(dtype=float)
+        err = f_ - a_
+        denom = float(np.abs(a_).sum())
+        rel = float(err.sum() / denom) if denom > 0 else 0.0
+        mad = float(np.mean(np.abs(err)))
+        ts = float(err.sum() / mad) if mad > 0 else 0.0
+        weight = float(min(abs(ts) / max(trigger_ts, 1e-9), 1.0))
+        shrink = n / (n + shrinkage)
+        raw = 1.0 - rel * weight * shrink
+        factor = float(np.clip(raw, 1.0 - max_rel, 1.0 + max_rel))
+        applied = abs(factor - 1.0) >= min_correction
+        cell.update({
+            "rel_error": rel, "ts": ts, "weight": weight,
+            "shrinkage_w": shrink,
+            "factor": float(factor) if applied else 1.0,
+            "applied": bool(applied),
+            "reason": None if applied else "correccion inmaterial (<0.5%)",
+        })
+        if applied:
+            factors[str(prop)] = float(factor)
+        report["properties"].append(cell)
+    report["n_applied"] = len(factors)
+    return factors, report
+
+
+def apply_level_factors(
+    frame: pd.DataFrame,
+    factors: dict[str, float] | None,
+    *,
+    property_col: str = "property",
+    target_col: str = "raw_forecast_rn",
+) -> pd.DataFrame:
+    """Aplica la corrección de nivel por propiedad al forecast.
+
+    Multiplicativa sobre el punto ANTES de la corrección por banda y de
+    las restricciones (piso de reservas / techo de capacidad se
+    re-aplican después). Escribe ``level_correction_factor`` — sin
+    factores, el frame vuelve intacto (knob OFF bit a bit).
+    """
+    if not factors or frame is None or frame.empty:
+        return frame
+    if target_col not in frame.columns:
+        return frame
+    out = frame.copy()
+    props = out[property_col].astype(str)
+    factor = pd.Series(1.0, index=out.index)
+    for prop, f in factors.items():
+        if float(f) == 1.0:
+            continue
+        mask = props == str(prop)
+        if mask.any():
+            factor.loc[mask] = float(f)
+    out[target_col] = pd.to_numeric(out[target_col], errors="coerce") * factor
+    out["level_correction_factor"] = factor
+    return out
+
+
 def _select_long_replacement(
     prop: str,
     champion: str,

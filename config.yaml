@@ -117,6 +117,29 @@ monitoring:
     # la baja por la data del año previo), no bias estacional recurrente.
     # La maquinaria queda disponible como knob con evidencia documentada.
     seasonal_cells: false
+  # Correccion de nivel por drift del forecast PUBLICADO (openspec
+  # 2026-11-05-drift-level-correction): cuando el tracking signal de un
+  # hotel acumula sesgo sostenido en la ventana reciente (|TS|>=4), el
+  # punto se corrige con el error publicado reciente — walk-forward, sin
+  # lookahead, peso suave min(|TS|/trigger,1), shrinkage y clip +-20%.
+  # SOLO aplica en corridas futuras (la publicacion operativa); en modo
+  # verificacion el horizonte con reales nunca se corrige con informacion
+  # del propio horizonte.
+  # Default fijado por el A/B replay del 05-nov: NEGATIVO — la señal
+  # (errores de la publicacion previa) solo observa leads cortos ya
+  # calibrados por el piso de reservas (FIESTA +0.2%): cuando dispara,
+  # sobre-corrige (cobertura FIESTA 90.8%->81.7%) y el drift real
+  # (leads 14-59) materializa 2-4 semanas despues, fuera del alcance de
+  # la señal. Maquinaria queda como knob; re-apertura con la variante de
+  # senal de la publicacion de hace 45-60 dias cuando el registro la
+  # permita validar.
+  level_correction:
+    enabled: false
+    ts_trigger: 4.0
+    window_days: 60
+    min_obs: 10
+    shrinkage: 10
+    max_rel: 0.20
   # Bandas de referencia de la INDUSTRIA para juzgar el WMAPE por horizonte
   # (perfil resort/estacional del portafolio). Fuente: HospitalityOS,
   # "Hotel Forecast Accuracy Benchmarking" (2026-09), compilado de

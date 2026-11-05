@@ -60,6 +60,14 @@ El sistema SHALL persistir un registro append-only entre corridas con: métricas
 - **WHEN** ninguna estancia del forecast anterior se ha materializado
 - **THEN** el CSV no se publica (nunca se inventa) y el manifiesto lo documenta
 
+#### Scenario: Corrección de nivel por drift (knob, default OFF)
+- **WHEN** `monitoring.level_correction.enabled` está activo y la corrida es `futuro` con una publicación previa graduable
+- **THEN** el desvío de nivel por propiedad se estima SOLO de los errores del forecast publicado previo sobre la ventana reciente de estancias (`rel = Σ(fc−act)/Σ|act|`, `ts = Σerr/media|err|`), con peso suave `min(|ts|/ts_trigger, 1)`, shrinkage `n/(n+shrinkage)`, clip `±max_rel`, `min_obs` y umbral de materialidad (0.5%)
+- **THEN** la aplicación es multiplicativa al punto ANTES de la corrección por banda y de las restricciones; el dataset publicado lleva `level_correction_factor` y el manifiesto el detalle por propiedad (n, rel, ts, peso, factor, razón) — ninguna corrección silenciosa
+- **THEN** en modo verificación NO se aplica (el horizonte con reales no se corrige con información del propio horizonte) y la razón queda en el manifiesto
+- **THEN** con `enabled: false` el sistema no escribe la columna ni cambia ningún número
+- **THEN** el default OFF quedó fijado por el A/B replay del 2026-11-05: la señal (errores de la publicación previa) solo observa leads cortos ya calibrados por el piso de reservas — cuando disparó, sobre-corrigió (cobertura FIESTA 90.8%→81.7%) y el drift real (leads 14-59) queda fuera de su alcance temporal; la maquinaria queda como knob a la espera de la variante de señal de publicación antigua
+
 
 ### Requirement: Detección de outliers sin eliminación automática
 El sistema SHALL detectar eventos, picos anormales, caídas abruptas, cierres, cambios de inventario, datos faltantes y cambios estructurales, clasificándolos sin eliminarlos automáticamente.

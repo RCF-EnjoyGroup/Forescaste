@@ -75,9 +75,11 @@ from src.forecasting.core import (  # re-exportados para tests/CLI
     _normalize_pickup,
     _remaining_pickup_curves,
     apply_bias_factors,
+    apply_level_factors,
     build_forecasts,
     fit_candidate,
     lead_bias_factors,
+    level_correction_factors,
     operative_residual_bands,
     predict_candidate,
 )
@@ -844,6 +846,49 @@ def run_end_to_end(
         fold_metrics=fold_metrics,  # evidencia para el blend accuracy-aware
     )
 
+    # ---------- 5.1 corrección de nivel por drift (solo modo futuro)
+    # Los errores del forecast PUBLICADO previo miden el desvío de nivel
+    # vigente (walk-forward, sin lookahead). En modo verificación NO se
+    # aplica: el horizonte con reales no se corrige con información del
+    # propio horizonte (honestidad de la evaluación).
+    level_cfg = dict((config.monitoring or {}).get("level_correction") or {})
+    level_factors: dict[str, float] = {}
+    level_report: dict = {"enabled": bool(level_cfg.get("enabled", False)),
+                          "run_mode": str(run_mode)}
+    if (
+        level_cfg.get("enabled")
+        and str(run_mode) == "futuro"
+        and previous_operational is not None
+    ):
+        prev_fc = load_published_forecast(
+            str(previous_operational.get("run_dir") or "")
+        )
+        if prev_fc is not None:
+            detail_level = vintage_detail(
+                prev_fc, dem, through=pd.Timestamp(dem["stay_date"].max())
+            )
+            level_factors, level_report = level_correction_factors(
+                detail_level,
+                trigger_ts=float(level_cfg.get("ts_trigger", 4.0)),
+                window_days=int(level_cfg.get("window_days", 60)),
+                min_obs=int(level_cfg.get("min_obs", 10)),
+                shrinkage=int(level_cfg.get("shrinkage", 10)),
+                max_rel=float(level_cfg.get("max_rel", 0.20)),
+            )
+            level_report["published_run_id"] = str(
+                previous_operational.get("run_id") or ""
+            )
+        else:
+            level_report["note"] = "sin dataset publicado previo legible"
+    elif level_cfg.get("enabled"):
+        level_report["note"] = (
+            "sin correccion: modo verificacion (el horizonte con reales"
+            " no se corrige con informacion del propio horizonte)"
+            if str(run_mode) != "futuro"
+            else "sin corrida futura previa en el registro"
+        )
+    raw = apply_level_factors(raw, level_factors)
+
     # ---------- 5b. corrección de bias por (propiedad, banda de lead)
     # El backtest operativo documenta sobre-pronóstico sistemático a leads
     # largos (+23%/+30% en 60-90+): la corrección se aprende de los residuos
@@ -1228,6 +1273,7 @@ def run_end_to_end(
             "excluded_properties": _jsonable(excluded_props_map),
             "cold_start_properties": _jsonable(cold_start_properties),
             "bias_correction": _jsonable(bias_report),
+            "level_correction": _jsonable(level_report),
             "vintage_tracking": _jsonable(vintage_tracking),
             "forecast_revision": _jsonable(forecast_rev),
             "track_record": _jsonable(track_summary),
