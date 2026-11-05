@@ -99,6 +99,25 @@ monitoring:
   # del forecast operativo (shrinkage hacia 1.0 según el tamaño de muestra;
   # el backtest documenta sobre-pronóstico de +23%/+30% a leads 60-90+)
   bias_correction:
+    # Kill-switch de la capa (openspec 2026-11-05-bias-correction-mode):
+    # false omite la correccion completa y el manifiesto lo declara.
+    # Default fijado por el A/B de 3 brazos del 05-nov (misma data):
+    # apagar EMPEORA SJOSL (sesgo +17.1%->+21.8%, wmape 43.6->45.4);
+    # MARINA mejora al apagar (8.4%->2.6%) pero los brazos B/C publicaron
+    # sarimax por la cadena de histeresis del registro
+    # (futuro-20261104-1525 giro el incumbente) — mejora NO atribuible
+    # a la capa; CORIN/LIREL mejoran ~1pp sin capa; FIESTA/VILLAS
+    # intactas (celdas bloqueadas). Ningun brazo cumplio los criterios
+    # (criterio 2 fallo en SJOSL/FIESTA) -> capa ON, folds uniformes.
+    enabled: true
+    # Ponderacion de folds por recencia en el estimador (el fold mas
+    # reciente pesa 1.0, el anterior decay, etc.) — alinea la evidencia
+    # con el regimen cuando el portafolio esta en transicion. 1.0 =
+    # pesos uniformes (comportamiento historico, bit a bit). En el A/B
+    # del 05-nov la variante 0.7 no dano a nadie (SJOSL identico, resto
+    # mejor-o-igual) pero no cumplio el criterio de mejora estricta —
+    # queda como knob para re-visita con mas corridas.
+    fold_recency_decay: 1.0
     min_obs: 20
     shrinkage: 30
     max_rel: 0.30

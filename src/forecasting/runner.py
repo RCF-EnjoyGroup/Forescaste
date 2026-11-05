@@ -895,21 +895,28 @@ def run_end_to_end(
     # del forecast operativo en los folds (shrinkage por tamaño de muestra)
     # y se aplica al punto ANTES de piso/techo. Sin fold_predictions la
     # corrección es vacía (corridas de muestra quedan idénticas).
+    # Knob `enabled` (kill-switch) y `fold_recency_decay` (pondera los
+    # folds por recencia) — openspec 2026-11-05-bias-correction-mode.
     bias_cfg = dict((config.monitoring or {}).get("bias_correction") or {})
     seasonal_cells = bool(bias_cfg.get("seasonal_cells", False))
-    bias_factors, bias_report = lead_bias_factors(
-        fold_predictions, model_by_property, blend_by_property, history,
-        min_obs=int(bias_cfg.get("min_obs", 20)),
-        shrinkage=int(bias_cfg.get("shrinkage", 30)),
-        max_rel=float(bias_cfg.get("max_rel", 0.30)),
-        seasonal_cells=seasonal_cells,
-    )
-    raw = apply_bias_factors(
-        raw, bias_factors,
-        fallback_factors=(
-            dict(bias_report.get("band_factors") or {}) if seasonal_cells else None
-        ),
-    )
+    bias_enabled = bool(bias_cfg.get("enabled", True))
+    if bias_enabled:
+        bias_factors, bias_report = lead_bias_factors(
+            fold_predictions, model_by_property, blend_by_property, history,
+            min_obs=int(bias_cfg.get("min_obs", 20)),
+            shrinkage=int(bias_cfg.get("shrinkage", 30)),
+            max_rel=float(bias_cfg.get("max_rel", 0.30)),
+            seasonal_cells=seasonal_cells,
+            fold_recency_decay=float(bias_cfg.get("fold_recency_decay", 1.0)),
+        )
+        raw = apply_bias_factors(
+            raw, bias_factors,
+            fallback_factors=(
+                dict(bias_report.get("band_factors") or {}) if seasonal_cells else None
+            ),
+        )
+    else:
+        bias_factors, bias_report = {}, {"enabled": False}
 
     # cold start: propiedades con < 365d de histórico (p. ej. apertura
     # reciente) — forecast provisional, documentado en el manifiesto

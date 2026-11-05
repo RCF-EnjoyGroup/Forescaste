@@ -195,6 +195,20 @@ El sistema SHALL generar P10, P50 y P90 (o lower/forecast/upper) siempre que el 
 - **THEN** con `seasonal_cells: false` (default) el sistema calibra exactamente como antes y las bandas son bit a bit idénticas
 - **THEN** el default OFF quedó fijado por el A/B del 2026-10-30: activado, la cobertura del horizonte empeoró (FIESTA 42.2%→23.3%, CORIN −12.2pp) — el sesgo del horizonte era drift de nivel YoY, no bias estacional recurrente, y la calibración del año previo corrigió en dirección contraria
 
+#### Scenario: Capa apagable (kill-switch)
+- **WHEN** `monitoring.bias_correction.enabled: false`
+- **THEN** no se estiman ni aplican factores: el punto publicado es el del modelo sin corrección y las bandas calibran ese pipeline
+- **THEN** el manifiesto publica `bias_correction: {enabled: false}` — la capa jamás se desactiva en silencio
+- **THEN** con `enabled: true` (default) el sistema se comporta exactamente como antes
+- **THEN** el A/B de 3 brazos del 2026-11-05 decidió MANTENER el default ON: apagar la capa empeora SJOSL (sesgo +17.1%→+21.8%, wmape 43.6→45.4) — en SJOSL la capa ayuda; la mejora de MARINA sin capa quedó confundida por un cambio de modelo de la histéresis del registro
+
+#### Scenario: Evidencia ponderada por recencia de folds
+- **WHEN** `monitoring.bias_correction.fold_recency_decay < 1.0`
+- **THEN** cada fold pesa `decay^(edad del fold)` en el bias relativo de la celda y en la votación de consistencia de signo — el régimen reciente domina sin anular la evidencia vieja
+- **THEN** `min_obs` sigue contando observaciones crudas; shrinkage y clip no cambian
+- **THEN** con `fold_recency_decay: 1.0` (default) el estimador es bit a bit el actual
+- **THEN** en el A/B del 2026-11-05 la variante 0.7 no dañó a nadie (SJOSL idéntico, resto mejor-o-igual) pero no cumplió la mejora estricta — queda como knob documentado para re-visita
+
 #### Scenario: Cobertura de banda monitoreada
 - **WHEN** la cobertura empírica de una propiedad se desvía más de 7.5 puntos del nominal con n suficiente
 - **THEN** el monitoreo emite una alerta de banda mal calibrada por propiedad

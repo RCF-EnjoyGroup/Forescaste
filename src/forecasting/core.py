@@ -787,6 +787,7 @@ def lead_bias_factors(
     min_correction: float = 0.005,
     min_consistency: float = 0.75,
     seasonal_cells: bool = False,
+    fold_recency_decay: float = 1.0,
 ) -> tuple[dict, dict]:
     """Corrección de bias por (propiedad, banda de lead) — evidencia de folds.
 
@@ -808,7 +809,10 @@ def lead_bias_factors(
       ciegas;
     - clip ``±max_rel`` (correcciones > 30% no son bias, son otro régimen);
     - celdas con < ``min_obs`` observaciones y correcciones < 0.5% no
-      tocan el punto (ruido, no evidencia).
+      tocan el punto (ruido, no evidencia);
+    - con ``fold_recency_decay < 1.0`` el fold más reciente pesa más en
+      el bias y en la votación de consistencia (mismo convenio de las
+      bandas); con 1.0, pesos uniformes.
 
     Con ``seasonal_cells=True`` además se estima por
     **(propiedad, banda, temporada del stay)** (high/shoulder/low por
@@ -828,6 +832,12 @@ def lead_bias_factors(
     (factors, report): factores por (propiedad, banda) — o 3-tuplas con
     ``seasonal_cells`` — y detalle por celda (n, bias relativo,
     consistencia, factor) para el manifiesto.
+
+    Con ``fold_recency_decay < 1.0`` cada fold pesa
+    ``decay ** (max_fold − fold)`` en el bias relativo y en la votación
+    de consistencia: el régimen reciente domina sin anular la evidencia
+    vieja (el mismo convenio de ``operative_residual_bands``). Con 1.0
+    el estimador es bit a bit el actual.
     """
     from src.evaluation.breakdowns import lead_band, season_of_stay
 
@@ -839,6 +849,14 @@ def lead_bias_factors(
         return factors, {"note": "sin predicciones de folds (sin corrección)"}
     work = frame.dropna(subset=["forecast", "actual"]).copy()
     work["lead_band"] = work["lead_days"].map(lead_band)
+    decay = float(min(max(fold_recency_decay, 0.0), 1.0))
+    if "fold" in work.columns and decay < 1.0:
+        max_fold = pd.to_numeric(work["fold"], errors="coerce").max()
+        work["fold_weight"] = decay ** (
+            float(max_fold) - pd.to_numeric(work["fold"], errors="coerce").fillna(max_fold)
+        )
+    else:
+        work["fold_weight"] = 1.0
 
     cells: list[dict] = []
     band_factors: dict[tuple[str, str], float] = {}
@@ -936,9 +954,17 @@ def _bias_cell_estimate(
         return {"n_obs": n, "rel_bias": None, "consistency": None,
                 "factor": 1.0, "applied": False,
                 "reason": f"n<{min_obs} o sin reales", "en_gates": False}
-    rel = float((grp["forecast"] - grp["actual"]).sum() / denom)
+    if "fold_weight" in grp.columns:
+        w = pd.to_numeric(grp["fold_weight"], errors="coerce").fillna(1.0)
+    else:
+        w = pd.Series(1.0, index=grp.index)
+    rel = float(
+        (w * (grp["forecast"] - grp["actual"])).sum()
+        / (w * grp["actual"].abs()).sum()
+    )
     # consistencia del signo del bias entre folds (estabilidad del
-    # sesgo): un sesgo que gira entre ventanas es régimen, no bias
+    # sesgo): un sesgo que gira entre ventanas es régimen, no bias —
+    # con ponderación por recencia, el voto de un fold viejo vale menos
     fold_biases = (
         grp.groupby("fold")
         .apply(lambda g: float((g["forecast"] - g["actual"]).sum()
@@ -946,11 +972,24 @@ def _bias_cell_estimate(
         if "fold" in grp.columns and grp["fold"].nunique() > 1
         else None
     )
+    fold_weights: dict | None = None
+    if "fold" in grp.columns and "fold_weight" in grp.columns:
+        fold_weights = (
+            grp.groupby("fold")["fold_weight"].first().to_dict()
+        )
     consistency = None
     if fold_biases is not None and len(fold_biases.dropna()) > 0:
         agg_sign = 1 if rel > 0 else -1
         signs = fold_biases.dropna().map(lambda v: 1 if v > 0 else -1)
-        consistency = float((signs == agg_sign).mean())
+        if fold_weights:
+            wts = pd.Series(
+                {f: float(fold_weights.get(f, 1.0)) for f in signs.index}
+            )
+            consistency = float(
+                (wts * (signs == agg_sign)).sum() / wts.sum()
+            )
+        else:
+            consistency = float((signs == agg_sign).mean())
     if consistency is not None and consistency < min_consistency:
         return {"n_obs": n, "rel_bias": rel, "consistency": consistency,
                 "factor": 1.0, "applied": False,
