@@ -36,7 +36,9 @@ def _find_col(df: pd.DataFrame, candidates: tuple[str, ...], what: str) -> str:
     for cand in candidates:
         if cand in lowered:
             return lowered[cand]
-    raise EventsError(f"events.csv sin columna de {what}: use alguna de {list(candidates)}")
+    raise EventsError(
+        f"events.csv sin columna de {what}: use alguna de {list(candidates)}"
+    )
 
 
 def load_events(path: str | Path) -> pd.DataFrame | None:
@@ -73,7 +75,10 @@ def load_events(path: str | Path) -> pd.DataFrame | None:
     )
     if prop_col is not None:
         out["property"] = df[prop_col].astype(str).str.strip()
-        out.loc[out["property"].isin(("", "nan", "None", "NULL")), "property"] = None
+        mask = (
+            out["property"].isin(("", "nan", "None", "NULL")) | out["property"].isna()
+        )
+        out["property"] = out["property"].astype(object).where(~mask, None)
     else:
         out["property"] = None
 

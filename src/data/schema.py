@@ -57,7 +57,9 @@ class SourceSchema:
         try:
             return self.roles[role]
         except KeyError as exc:
-            raise SchemaDetectionError(f"rol '{role}' no detectado en {self.kind.value}") from exc
+            raise SchemaDetectionError(
+                f"rol '{role}' no detectado en {self.kind.value}"
+            ) from exc
 
     def coerce(self, df: pd.DataFrame) -> pd.DataFrame:
         """Normaliza dtypes según el esquema: fechas a datetime, métricas a numérico.
@@ -92,7 +94,7 @@ class SourceSchema:
 def _is_date_like(series: pd.Series) -> bool:
     if pd.api.types.is_datetime64_any_dtype(series):
         return True
-    if series.dtype == object:
+    if series.dtype == object or pd.api.types.is_string_dtype(series):
         sample = series.dropna().astype(str).head(20)
         if sample.empty:
             return False
@@ -105,7 +107,9 @@ def _is_date_like(series: pd.Series) -> bool:
 
 
 def _is_numeric(series: pd.Series) -> bool:
-    return pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series)
+    return pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(
+        series
+    )
 
 
 def _pick_by_hint(roles: list[str], columns: list[str]) -> str | None:
@@ -152,7 +156,9 @@ def detect_schema(
     # 1) Candidatos por nombre (config), por rol
     for role in _REQUIRED_ROLES[kind]:
         hint_key = role  # capacity/demand/pickup/date/property/snapshot/lead
-        candidate = _pick_by_hint(hints.get(hint_key, []), [c for c in columns if c not in used])
+        candidate = _pick_by_hint(
+            hints.get(hint_key, []), [c for c in columns if c not in used]
+        )
         if candidate is not None:
             roles[role] = candidate
             used.add(candidate)
@@ -167,7 +173,9 @@ def detect_schema(
                 used.add(col)
                 break
 
-    metric_role = {"capacity": "capacity", "demand": "demand", "pickup": "pickup"}[kind.value]
+    metric_role = {"capacity": "capacity", "demand": "demand", "pickup": "pickup"}[
+        kind.value
+    ]
 
     if "property" not in roles:
         for col in columns:
@@ -194,7 +202,12 @@ def detect_schema(
             for col in columns:
                 if col in used or not _is_numeric(df[col]):
                     continue
-                if _normalize(col).rstrip("s") in ("lead", "lead_day", "lead_time", "day"):
+                if _normalize(col).rstrip("s") in (
+                    "lead",
+                    "lead_day",
+                    "lead_time",
+                    "day",
+                ):
                     roles["lead"] = col
                     used.add(col)
                     break
@@ -212,7 +225,11 @@ def detect_schema(
                     break
             if "snapshot" not in roles:
                 for col in columns:
-                    if col in used or not _is_date_like(df[col]) or col == roles.get("date"):
+                    if (
+                        col in used
+                        or not _is_date_like(df[col])
+                        or col == roles.get("date")
+                    ):
                         continue
                     roles["snapshot"] = col
                     used.add(col)
@@ -232,6 +249,10 @@ def detect_schema(
             f"Decláralas en config.yaml (data.column_hints) si el nombre difiere."
         )
 
-    dtypes = {role: str(df[col].dtype) for role, col in roles.items() if col != "__derived__"}
+    dtypes = {
+        role: str(df[col].dtype) for role, col in roles.items() if col != "__derived__"
+    }
     unmapped = tuple(c for c in columns if c not in used)
-    return SourceSchema(kind=kind, roles=roles, dtypes=dtypes, unmapped_columns=unmapped)
+    return SourceSchema(
+        kind=kind, roles=roles, dtypes=dtypes, unmapped_columns=unmapped
+    )

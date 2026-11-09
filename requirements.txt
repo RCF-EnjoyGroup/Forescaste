@@ -2,7 +2,7 @@
 # Verificado con Python 3.11 (tasks 1.2)
 
 # Núcleo (ingesta, features, evaluación, reporting)
-pandas>=2.0
+pandas>=2.0,<4
 numpy>=1.26
 pyyaml>=6.0
 pydantic>=2.0
