@@ -45,6 +45,7 @@ class RunRecord:
     champion: str = ""
     model_by_property: dict[str, str] = field(default_factory=dict)
     interval_coverage: dict[str, Any] = field(default_factory=dict)
+    band_calibration: dict[str, float] = field(default_factory=dict)
     vintage_tracking: dict[str, Any] = field(default_factory=dict)
     config_fingerprint: str = ""
 

@@ -318,7 +318,7 @@ def build_intervals(
     point_col: str = "final_forecast_rn",
     residuals: pd.Series | None = None,
     levels: tuple[float, ...] = (0.10, 0.50, 0.90),
-    residual_bands: dict[str, pd.Series] | None = None,
+    residual_bands: dict[object, pd.Series] | None = None,
     lead_col: str = "lead_days",
     capacity_col: str = "capacity",
     min_residuals: int = 20,

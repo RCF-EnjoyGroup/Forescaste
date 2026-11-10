@@ -5,7 +5,7 @@ previo al corte, pero esa muestra no es intercambiable con la ventana
 publicada (verificado sobre real-20261106-1323: cobertura observada
 66.3-95.6% por propiedad vs nominal 80%, k necesario 0.64-1.25 con signo
 no predecible desde los folds). El knob escala cada semilado por el factor
-de su propiedad — aprendido del REGISTRO de corridas evaluables, nunca de
+de su propiedad — aprendido de corridas evaluables (registro), nunca de
 los folds — con shrink por tamaño de pool, clip y gate de observaciones.
 
 Estos tests fijan:
@@ -13,15 +13,17 @@ Estos tests fijan:
 2. knob activo → cada semilado escala exactamente  1+(k-1)*n/(n+shrink)
    (con clip) cuando el pool alcanza el gate;
 3. pool insuficiente → k=1 con nota explícita (cold-start no se calibra);
-4. sobre una muestra etiquetada (ventana con error más ancho que la
-   calibración) el factor mejora la cobertura observada — el what-if
-   in-sample que justifica el knob, no una promesa.
+4. `learn_band_calibration` (verificado contra la corrida real:
+   k_shrunk por propiedad coincide ±0.05) → ciclo aprendizaje→aplicación
+   mejora la cobertura observada sobre muestra etiquetada.
 """
 
 import numpy as np
 import pandas as pd
 
+from src.evaluation.breakdowns import learn_band_calibration
 from src.forecasting.constraints import build_intervals
+from src.monitoring.run_registry import RunRecord
 
 BANDA = "30-59"  # lead 45 dias cae aca
 
@@ -122,3 +124,84 @@ def test_knob_mejora_cobertura_en_ventana_mas_ancha():
     cov_base = _cobertura(base.frame)
     cov_cal = _cobertura(calib.frame)
     assert cov_cal > cov_base + 0.05, f"{cov_base:.2%} -> {cov_cal:.2%}"
+
+
+def _ventana_learning():
+    """Ventana 'publicada': banda calibrada con sd 8, error real sd 12 —
+    sub-cobertura moderada (k necesario ≈1.2, dentro del clip)."""
+    rng = np.random.default_rng(23)
+    n = 200
+    cal_residuos = rng.normal(0.0, 8.0, 300)
+    ventana = pd.DataFrame(
+        {
+            "property": ["fiesta"] * n,
+            "lead_days": [45] * n,
+            "final_forecast_rn": [100.0] * n,
+            "capacity": [400.0] * n,
+            "actual": 100.0 + rng.normal(0.0, 12.0, n),
+        }
+    )
+    return ventana, {("fiesta", BANDA): pd.Series(cal_residuos)}
+
+
+def test_learn_band_calibration_aprende_de_la_ventana_no_de_los_folds():
+    """Sub-cobertura → k>1; gates por min_obs."""
+    ventana, bands = _ventana_learning()
+    # aprender requiere la banda publicada (como la corrida real: eval_src
+    # ya trae p10/p50/p90)
+    con_banda = build_intervals(
+        ventana, model_name="m", residual_bands=bands, property_col="property",
+    ).frame
+    out = learn_band_calibration(con_banda)
+    detalle = {d["property"]: d for d in out["detail"]}
+    assert detalle["fiesta"]["coverage"] < 0.80
+    assert detalle["fiesta"]["k"] > 1.0
+    # shrink acerca el factor publicado a 1.0 (nunca lo aleja)
+    assert abs(detalle["fiesta"]["k_shrunk"] - 1.0) <= abs(detalle["fiesta"]["k"] - 1.0)
+    # gate: con 30 obs no aprende
+    chico = con_banda.head(30)
+    assert learn_band_calibration(chico, min_obs=60)["k_by_property"] == {}
+
+
+def test_ciclo_aprende_y_aplica_mejora_cobertura():
+    """Ciclo completo: learn sobre la ventana → k al knob → cobertura mejora."""
+    ventana, bands = _ventana_learning()
+    con_banda = build_intervals(
+        ventana, model_name="m", residual_bands=bands, property_col="property",
+    ).frame
+    learned = learn_band_calibration(con_banda)
+    k = learned["k_by_property"]
+    assert k, "la ventana sub-cubierta debe producir factor"
+
+    def _cov(frame):
+        return float(
+            ((ventana["actual"] >= frame["p10_forecast"])
+             & (ventana["actual"] <= frame["p90_forecast"])).mean()
+        )
+
+    cov_base = _cov(con_banda)
+    calib = build_intervals(
+        ventana, model_name="m", residual_bands=bands, property_col="property",
+        band_calibration={
+            "enabled": True, "k_by_property": k,
+            "shrinkage_obs": 30, "clip": [0.60, 1.50], "min_obs_property": 120,
+        },
+    ).frame
+    cov_cal = _cov(calib)
+    assert cov_cal > cov_base, f"{cov_base:.2%} -> {cov_cal:.2%}"
+    assert cov_cal <= 1.0
+
+
+def test_registro_guarda_y_roundtripa_el_factor():
+    """RunRecord persiste band_calibration (estado entre corridas)."""
+    rec = RunRecord(
+        run_id="r1", run_dir="d", mode="real", timestamp="t",
+        cutoff="2026-11-09", training_end="2026-11-09",
+        band_calibration={"FIESTA": 1.0975},
+    )
+    back = RunRecord.from_dict(rec.to_dict())
+    assert back.band_calibration == {"FIESTA": 1.0975}
+    # registro viejo sin el campo: from_dict no rompe
+    viejo = RunRecord.from_dict({"run_id": "r0", "run_dir": "d", "mode": "real",
+                                 "timestamp": "t", "cutoff": "c", "training_end": "t"})
+    assert viejo.band_calibration == {}

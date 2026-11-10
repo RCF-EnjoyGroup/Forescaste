@@ -39,6 +39,7 @@ from src.data.schema import SourceKind, SourceSchema, detect_schema
 from src.evaluation.breakdowns import (
     interval_coverage,
     lead_band,
+    learn_band_calibration,
     metrics_by_lead_band,
     metrics_by_property,
     metrics_by_property_weekly,
@@ -972,7 +973,17 @@ def run_end_to_end(
     )
     residuals_provided = bool(residual_bands) and len(residuals_flat) > 0
     if operative_bands:
-        _calib_raw = (config.monitoring or {}).get("interval_calibration") or {}
+        _calib_raw = dict((config.monitoring or {}).get("interval_calibration") or {})
+        # el registro es la fuente de aprendizaje: k medidos en corridas
+        # evaluables previas; config.yaml manda como override explícito
+        _k_registry = {
+            str(k): float(v)
+            for k, v in ((previous_run or {}).get("band_calibration") or {}).items()
+        }
+        _calib_raw["k_by_property"] = {
+            **_k_registry,
+            **{str(k): float(v) for k, v in dict(_calib_raw.get("k_by_property") or {}).items()},
+        }
         interval = build_intervals(
             with_occ,
             model_name=champion,
@@ -1051,6 +1062,19 @@ def run_end_to_end(
         coverage = interval_coverage(eval_src)
     else:
         coverage = None
+
+    # ---------- aprendizaje del knob de banda (openspec 2026-11-09-band-calibration)
+    # El factor por propiedad se mide sobre ESTA ventana evaluable (cobertura
+    # observada vs nominal) y se guarda en el registro para la próxima
+    # corrida — nunca sobre los folds: el año de calibración no es
+    # intercambiable con la ventana publicada (medido: k 0.64-1.25, signo
+    # no predecible desde los folds).
+    learned_calibration: dict[str, float] = {}
+    if coverage is not None and eval_src is not None:
+        _learned = learn_band_calibration(eval_src)
+        learned_calibration = {
+            str(k): float(v) for k, v in (_learned.get("k_by_property") or {}).items()
+        }
 
     evaluated_props = (
         sorted(eval_src["property"].dropna().unique()) if eval_src is not None else []
@@ -1347,6 +1371,7 @@ def run_end_to_end(
                     champion=str(champion),
                     model_by_property=dict(model_by_property),
                     interval_coverage=_jsonable(coverage_compact),
+                    band_calibration=_jsonable(learned_calibration),
                     vintage_tracking=_jsonable(vintage_tracking) or {},
                 ),
             )

@@ -135,6 +135,122 @@ def interval_coverage(
     }
 
 
+def learn_band_calibration(
+    df: pd.DataFrame,
+    *,
+    property_col: str = "property",
+    actual_col: str = "actual",
+    p10_col: str = "p10_forecast",
+    p50_col: str = "p50_forecast",
+    p90_col: str = "p90_forecast",
+    nominal: float = 0.80,
+    min_obs: int = 60,
+    shrinkage: int = 30,
+    clip: tuple[float, float] = (0.60, 1.50),
+    step: float = 0.01,
+) -> dict:
+    """Factor de banda por propiedad que devuelve la cobertura al nominal.
+
+    Knob openspec 2026-11-09-band-calibration, lado del APRENDIZAJE: se
+    mide sobre la ventana de una corrida EVALUABLE (esta misma muestra con
+    reales), nunca sobre los folds — verificado en real-20261106-1323, el
+    k necesario para volver al 80% va de 0.64 a 1.25 por propiedad y los
+    folds del año previo dan el signo inverso.
+
+    Por propiedad con al menos ``min_obs`` observaciones evaluables (IC95
+    de la cobertura ±8.3pp con n≈90: por debajo de eso el factor persigue
+    ruido), ``k`` = el mínimo de la grilla ``[clip_lo, clip_hi]`` que
+    escala el semiancho alrededor del punto hasta que la cobertura
+    empírica alcanza ``nominal``; el factor publicado lleva shrink
+    ``n/(n+shrinkage)`` hacia 1.0 y se recorta a ``clip``. Propiedades sin
+    evidencia suficiente quedan fuera del resultado (el consumidor las
+    trata como k=1).
+    """
+    cols = {actual_col, p10_col, p90_col}
+    if not cols <= set(df.columns):
+        return {"k_by_property": {}, "detail": []}
+    work = df.copy()
+    for c in sorted((cols | {p50_col}) & set(df.columns)):
+        work[c] = pd.to_numeric(work[c], errors="coerce")
+    work = work.dropna(subset=sorted(cols))
+    if work.empty:
+        return {"k_by_property": {}, "detail": []}
+    # punto de anclaje: p50 cuando existe (banda anclada al punto); si no,
+    # el centro de la banda publicada
+    center = (
+        work[p50_col]
+        if p50_col in work.columns
+        else (work[p10_col] + work[p90_col]) / 2.0
+    )
+    half = (
+        ((work[p90_col] - center) + (center - work[p10_col])) / 2.0
+    ).clip(lower=1e-9)
+    lo_k, hi_k = min(clip), max(clip)
+
+    k_by_property: dict[str, float] = {}
+    detail: list[dict] = []
+    for prop, grp in work.groupby(work[property_col].astype(str), observed=True) if property_col in work.columns else []:
+        n = int(len(grp))
+        cov0 = float(
+            ((grp[actual_col] >= grp[p10_col]) & (grp[actual_col] <= grp[p90_col])).mean()
+        )
+        k_final: float | None = None
+        if n >= min_obs:
+            center_g = center.loc[grp.index]
+            half_g = half.loc[grp.index]
+            actual_g = grp[actual_col]
+            if cov0 < nominal - 1e-9:
+                # sub-cobertura: ensanchar hasta alcanzar el nominal
+                k = lo_k
+                while k <= hi_k + 1e-9:
+                    if (
+                        (
+                            (actual_g >= center_g - k * half_g)
+                            & (actual_g <= center_g + k * half_g)
+                        ).mean()
+                        >= nominal
+                    ):
+                        k_final = round(float(k), 4)
+                        break
+                    k = round(k + step, 4)
+            else:
+                # sobre-cobertura: angostar hasta que empiece a perder
+                k = 1.0
+                while k > lo_k - 1e-9:
+                    if (
+                        (
+                            (actual_g >= center_g - k * half_g)
+                            & (actual_g <= center_g + k * half_g)
+                        ).mean()
+                        < nominal
+                    ):
+                        k_final = round(float(k + step), 4)
+                        break
+                    k = round(k - step, 4)
+                if k_final is None:
+                    k_final = round(lo_k, 4)
+        if k_final is not None:
+            k_eff = round(
+                min(
+                    max(1.0 + (k_final - 1.0) * (n / (n + max(shrinkage, 0))), lo_k),
+                    hi_k,
+                ),
+                4,
+            )
+            k_by_property[str(prop)] = k_eff
+            detail.append(
+                {
+                    "property": str(prop),
+                    "n_obs": n,
+                    "coverage": cov0,
+                    "k": k_final,
+                    "k_shrunk": k_eff,
+                    "nominal": float(nominal),
+                }
+            )
+    return {"k_by_property": k_by_property, "detail": sorted(detail, key=lambda r: r["property"])}
+
+
 def _metrics_by(
     df: pd.DataFrame,
     group_cols: list[str],
