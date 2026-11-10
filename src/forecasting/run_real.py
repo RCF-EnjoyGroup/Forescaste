@@ -74,6 +74,7 @@ from src.features.holidays import (
     calendar_with_events,
     holiday_calendar_from_config,
 )
+from src.monitoring.run_registry import latest_record, load_registry
 from src.reporting.benchmark import run_benchmark
 
 # Ventana de cada fold = horizonte OPERATIVO completo (config
@@ -486,8 +487,20 @@ def main(argv: list[str] | None = None) -> int:
             folds_eval, error_panel=error_panel_eval, source="real_backtest",
             dm_horizon=_dm_horizon_from_panel(error_panel_eval),
         )
+        # histéresis: mismo trato que la corrida operativa (runner) — la
+        # selección as-of retiene al incumbente del registro salvo ventaja
+        # material, para que el KPI publicado mida el mix que opera
+        try:
+            registro = load_registry(cfg.monitoring.registry_path)
+            previous_run = latest_record(registro)
+        except (OSError, ValueError):
+            previous_run = None
         sel_eval = (
-            select_per_property(folds_eval, global_champion=bench_eval.champion)
+            select_per_property(
+                folds_eval,
+                global_champion=bench_eval.champion,
+                incumbent=(previous_run or {}).get("model_by_property"),
+            )
             if "property" in folds_eval.columns
             else None
         )
