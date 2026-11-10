@@ -5,7 +5,6 @@
 pandas>=2.0,<4
 numpy>=1.26
 pyyaml>=6.0
-pydantic>=2.0
 
 # Estadístico / validación
 scikit-learn>=1.4
@@ -21,6 +20,9 @@ shap>=0.44
 
 # Reporte visual HTML por corrida (reporting/visual_report.py)
 matplotlib>=3.7
+
+# Reporte mensual de vintages a Excel (scripts/monthly_vintage_report.py)
+openpyxl>=3.1
 
 # Calendario de feriados CR + mercados emisores (features/holidays.py)
 holidays>=0.40

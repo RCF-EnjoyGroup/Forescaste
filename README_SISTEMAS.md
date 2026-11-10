@@ -251,11 +251,11 @@ manifiesto) — no se inventan reales futuros.
    `benchmark`) sobre la serie agregada, selección de campeón por evidencia
    out-of-sample, desgloses por lead/propiedad/temporada)
 3. Pronostica el horizonte configurado del portafolio **y por propiedad**, con:
-   - reservas actuales como señal (`rotb_d90/180/365` — correlación 0.93 con lo realizado)
+   - reservas actuales como señal (`current_booked_rn` — reservas en libros al corte del pickup; se usa como piso del forecast y en el backtest)
    - techo de capacidad del inventario y ocupación implícita
    - bandas de incertidumbre conformales con cobertura reportada
    - hotels nuevos (cold-start) estimados desde sus libros, con flag explícito
-   - **cobertura de libros**: qué % del pronóstico ya está reservado
+   - **forecast vs corrida previa**: comparación entre corridas consecutivas publicada en el dataset de Power BI
 
 **Contacto**: equipo de analítica — cualquier duda sobre las queries o el
 formato, antes de reintentar a ciegas: el contrato está en este documento y en

@@ -85,7 +85,7 @@ inventan reales futuros.
 |---|---|
 | `FORECAST_HORIZON` | horizonte en días (default 90) |
 | `RETRAIN_FREQUENCY` | política de re-entrenamiento (default monthly) |
-| `MIN_HISTORY_DAYS` | histórico mínimo para re-entrenar (default 365) |
+| `MIN_HISTORY` | histórico mínimo para re-entrenar (default 365) |
 | `RANDOM_SEED` | semilla (default 42) |
 
 ---
@@ -196,7 +196,7 @@ src/
 ├── explainability/      # importancia de features + SHAP
 ├── monitoring/          # drift YoY, outliers, re-entrenamiento, registro entre corridas, tracking vintage, manifiesto
 └── reporting/           # benchmark, tabla de forecast, KPIs, dataset Power BI, entregables
-tests/                   # 457 tests
+tests/                   # 461 tests
 openspec/                # specs, propuestas y changelog del proyecto
 ```
 
@@ -300,7 +300,7 @@ openspec/                # specs, propuestas y changelog del proyecto
 ## Tests
 
 ```bash
-python -m pytest -q          # 457 tests
+python -m pytest -q          # 461 tests
 ```
 
 Cobren la cadena completa (e2e), esquema alternativo, as-of/leakage,
