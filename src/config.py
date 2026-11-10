@@ -158,6 +158,7 @@ def load_config(path: str | Path | None = None, env: dict[str, str] | None = Non
         "interval_recency_decay": float(
             mon_cfg_raw.get("interval_recency_decay", 0.7)
         ),
+        "interval_calibration": dict(mon_cfg_raw.get("interval_calibration") or {}),
     }
 
     return EngineConfig(

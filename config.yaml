@@ -183,6 +183,30 @@ monitoring:
   # cambio. La maquinaria queda: recalibrar aquí no requiere tocar código.
   interval_recency_decay: 1.0
 
+  # Calibración de la banda P10-P90 por propiedad (openspec
+  # 2026-11-09-band-calibration). La banda es conformal POR CONSTRUCCIÓN
+  # sobre 4 folds trimestrales del año previo al corte, pero esa muestra no
+  # es intercambiable con la ventana publicada: en real-20261106-1323 la
+  # cobertura observada fue 66-96% por propiedad (nominal 80%) y el k
+  # necesario para volver al nominal midió 0.64-1.25 con signo no
+  # predecible desde los folds. Este knob escala cada semilado por k_p:
+  #   - k_by_property se aprende del REGISTRO de corridas evaluables
+  #     (cobertura observada vs nominal), NUNCA de los folds;
+  #   - shrinkage_obs: shrink del factor hacia 1.0 según el pool de la
+  #     propiedad (n/(n+shrinkage_obs));
+  #   - clip: límites del factor aplicado;
+  #   - min_obs_property: gate — con menos residuos en el pool, la
+  #     propiedad queda en k=1 (cold-start no se calibra a ciegas).
+  # Default: apagado hasta el A/B de 3 brazos (what-if in-sample etiquetado
+  # en la propuesta: global 78.1% -> ~82%, dispersión por propiedad
+  # 29.3pp -> ~15pp).
+  interval_calibration:
+    enabled: false
+    shrinkage_obs: 30
+    clip: [0.60, 1.50]
+    min_obs_property: 120
+    k_by_property: {}
+
 # Calendario de feriados (fuente confiable: librería `holidays`): CR (Semana
 # Santa, Anexión, Día de la Madre, Independencia…) + mercados emisores US
 # (Thanksgiving, Memorial, Labor Day, 4 de julio). Fechas movibles resueltas

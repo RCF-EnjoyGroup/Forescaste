@@ -972,12 +972,16 @@ def run_end_to_end(
     )
     residuals_provided = bool(residual_bands) and len(residuals_flat) > 0
     if operative_bands:
+        _calib_raw = (config.monitoring or {}).get("interval_calibration") or {}
         interval = build_intervals(
             with_occ,
             model_name=champion,
             point_col="final_forecast_rn",
             residual_bands=operative_bands,
             property_col="property",
+            band_calibration=(
+                _calib_raw if _calib_raw.get("enabled") else None
+            ),
         )
         interval_source = "operative_fold_residuals"
     else:

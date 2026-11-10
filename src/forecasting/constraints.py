@@ -253,6 +253,65 @@ class IntervalResult:
             )
 
 
+def _apply_band_calibration(
+    p10: np.ndarray,
+    p50: np.ndarray,
+    p90: np.ndarray,
+    row_props: np.ndarray,
+    pool_sizes: dict[str, int],
+    calibration: dict,
+    notes: list[str],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Escala cada semilado de la banda por el factor de su propiedad.
+
+    Knob openspec 2026-11-09-band-calibration. ``k_by_property`` se aprende
+    del REGISTRO de corridas evaluables (cobertura observada vs nominal),
+    nunca de los folds: el año de calibración (4 folds trimestrales previos
+    al corte) y la ventana publicada no son intercambiables — medido sobre
+    real-20261106-1323, el k necesario para volver al 80% va de 0.64
+    (LIREL, sobre-cubre) a 1.25 (SJOSL, sub-cubre) y los folds tienen el
+    signo inverso. Shrink ``n/(n+shrinkage_obs)`` hacia 1.0 según el pool
+    efectivo de la propiedad, clip ``[clip_lo, clip_hi]`` y gate de
+    observaciones mínimas: sin evidencia suficiente, k=1 con nota (una
+    propiedad cold-start no se calibra a ciegas).
+    """
+    k_map = {
+        str(k): float(v)
+        for k, v in dict(calibration.get("k_by_property") or {}).items()
+    }
+    if not k_map or not calibration.get("enabled", False):
+        return p10, p90
+    shrinkage = max(float(calibration.get("shrinkage_obs", 30)), 0.0)
+    clip = [float(v) for v in (calibration.get("clip") or [0.60, 1.50])]
+    k_lo, k_hi = min(clip), max(clip)
+    min_obs = int(calibration.get("min_obs_property", 120))
+    lo = p50 - p10
+    hi = p90 - p50
+    applied: dict[str, float] = {}
+    skipped: set[str] = set()
+    for i, prop in enumerate(row_props):
+        k = k_map.get(str(prop))
+        if k is None:
+            continue
+        n_pool = int(pool_sizes.get(str(prop), 0))
+        if n_pool < min_obs:
+            skipped.add(str(prop))
+            continue
+        k_eff = 1.0 + (k - 1.0) * (n_pool / (n_pool + shrinkage))
+        k_eff = min(max(k_eff, k_lo), k_hi)
+        p10[i] = p50[i] - k_eff * lo[i]
+        p90[i] = p50[i] + k_eff * hi[i]
+        applied[str(prop)] = round(k_eff, 4)
+    if applied:
+        notes.append(f"band_calibration aplicada por propiedad: {applied}")
+    if skipped:
+        notes.append(
+            f"band_calibration omitida por pool insuficiente (<{min_obs} "
+            f"residuos): {sorted(skipped)}"
+        )
+    return p10, p90
+
+
 def build_intervals(
     df: pd.DataFrame,
     model_name: str,
@@ -264,6 +323,7 @@ def build_intervals(
     capacity_col: str = "capacity",
     min_residuals: int = 20,
     property_col: str | None = None,
+    band_calibration: dict | None = None,
 ) -> IntervalResult:
     """5.8 — Construye p10/p50/p90 anclados al forecast publicado.
 
@@ -285,6 +345,16 @@ def build_intervals(
       escala de error del portafolio ni viceversa. Escalera de fallback:
       (propiedad, banda) ≥ ``min_residuals`` → pool de la propiedad →
       pool de la banda → global.
+    - Con ``band_calibration`` (dict, knob openspec
+      2026-11-09-band-calibration, default apagado) cada semilado de la
+      banda se escala por el factor de su propiedad
+      (``k_by_property``), con shrink hacia 1.0 según el tamaño del pool
+      (``n/(n+shrinkage_obs)``), clip y gate de observaciones mínimas. El
+      factor se aprende del REGISTRO de corridas evaluables (cobertura
+      observada vs nominal), nunca de los folds: los folds del año previo
+      al corte no son intercambiables con la ventana publicada (medido:
+      k necesario 0.64-1.25 según propiedad, con signo no predecible).
+      ``None`` (= default) deja la banda bit a bit como estaba.
     - Si no hay residuos, marca el modelo como sin intervalo (spec:
       indicarlo explícito).
     """
@@ -577,6 +647,28 @@ def build_intervals(
         lo, hi = global_shift
         p10 = p10 + lo
         p90 = p90 + hi
+
+    # ---------- knob de calibracion por propiedad (openspec 2026-11-09-band-calibration)
+    if band_calibration:
+        if prop_aware:
+            # pool efectivo por propiedad: la suma de residuos que alimentan
+            # su escalera (celda propia + herencias), no las obs del portafolio
+            _pools: dict[str, int] = {}
+            for key, res in residual_bands.items():
+                vals, _w = _cell_values(res)
+                _pools[str(key[0])] = _pools.get(str(key[0]), 0) + int(len(vals))
+            p10, p90 = _apply_band_calibration(
+                p10, p50, p90,
+                out[property_col].astype(str).to_numpy(),
+                _pools,
+                band_calibration,
+                notes,
+            )
+        else:
+            notes.append(
+                "band_calibration ignorado: requiere residual_bands con "
+                "claves (propiedad, banda) y property_col"
+            )
 
     # contrato de orden p10 <= p50 <= p90: una celda con error de fold tan
     # sesgado que >90% de los residuos comparten signo produce una banda
