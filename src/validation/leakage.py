@@ -14,6 +14,7 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
 from src.features.asof import LeakageError, enforce_cutoff
 
 # ---------------------------------------------------------------------------
@@ -21,8 +22,14 @@ from src.features.asof import LeakageError, enforce_cutoff
 # ---------------------------------------------------------------------------
 
 _RANDOM_SPLIT_TOKENS = {
-    "random", "random_split", "train_test_split", "shuffle", "kfold",
-    "random_state", "aleatorio", "stratified",
+    "random",
+    "random_split",
+    "train_test_split",
+    "shuffle",
+    "kfold",
+    "random_state",
+    "aleatorio",
+    "stratified",
 }
 _TEMPORAL_TOKENS = {"expanding", "rolling", "origin", "temporal", "time", "sequential"}
 
@@ -37,13 +44,17 @@ def validate_split_config(split: dict[str, Any] | None) -> None:
     if not split:
         return
     strategy = str(split.get("strategy", "")).lower()
-    if strategy in _RANDOM_SPLIT_TOKENS or any(t in strategy for t in _RANDOM_SPLIT_TOKENS):
+    if strategy in _RANDOM_SPLIT_TOKENS or any(
+        t in strategy for t in _RANDOM_SPLIT_TOKENS
+    ):
         raise LeakageError(
             f"Estrategia de split no temporal detectada: '{strategy}'. "
             "El spec prohíbe el split aleatorio train/test; use expanding/rolling origin."
         )
     if "shuffle" in split and split["shuffle"]:
-        raise LeakageError("split.shuffle=true equivale a split aleatorio; prohibido por el spec")
+        raise LeakageError(
+            "split.shuffle=true equivale a split aleatorio; prohibido por el spec"
+        )
     random_state = split.get("random_state")
     if random_state is not None and not any(t in strategy for t in _TEMPORAL_TOKENS):
         raise LeakageError(
@@ -67,8 +78,8 @@ def validate_temporal_order(
     train: pd.DataFrame, val: pd.DataFrame, date_col: str
 ) -> None:
     """Verifica que toda la validación sea estrictamente posterior al entrenamiento."""
-    train_dates = pd.to_datetime(train[date_col], errors="coerce")
-    val_dates = pd.to_datetime(val[date_col], errors="coerce")
+    train_dates = parse_dates_flexible(train[date_col])
+    val_dates = parse_dates_flexible(val[date_col])
     if train_dates.empty or val_dates.empty:
         raise LeakageError("train/vacío: no se puede validar el orden temporal")
     if val_dates.min() <= train_dates.max():
@@ -104,7 +115,9 @@ class LeakageReport:
     def raise_if_dirty(self) -> None:
         if self.findings:
             details = "; ".join(str(f) for f in self.findings)
-            raise LeakageError(f"Leakage detectado ({len(self.findings)} hallazgos): {details}")
+            raise LeakageError(
+                f"Leakage detectado ({len(self.findings)} hallazgos): {details}"
+            )
 
 
 def check_future_values(
@@ -115,7 +128,7 @@ def check_future_values(
     check: str,
 ) -> LeakageFinding | None:
     """Filas cuyo valor observado es posterior al corte (RN/pickup/capacidad futuros)."""
-    dates = pd.to_datetime(df[obs_date_col], errors="coerce")
+    dates = parse_dates_flexible(df[obs_date_col])
     future = df.loc[dates > pd.Timestamp(cutoff)]
     if future.empty:
         return None
@@ -153,15 +166,21 @@ def check_feature_whole_dataset(
     recomputed_full = feature_fn(full)
     recomputed_full = recomputed_full.loc[train.index]
     cols = list(feature_cols) or [
-        c for c in recomputed_train.columns if pd.api.types.is_numeric_dtype(recomputed_train[c])
+        c
+        for c in recomputed_train.columns
+        if pd.api.types.is_numeric_dtype(recomputed_train[c])
     ]
     offenders: list[str] = []
     for col in cols:
         if col not in train.columns or col not in recomputed_train.columns:
             continue
         stored = pd.to_numeric(train[col], errors="coerce").to_numpy(dtype=float)
-        honest = pd.to_numeric(recomputed_train[col], errors="coerce").to_numpy(dtype=float)
-        leaky = pd.to_numeric(recomputed_full[col], errors="coerce").to_numpy(dtype=float)
+        honest = pd.to_numeric(recomputed_train[col], errors="coerce").to_numpy(
+            dtype=float
+        )
+        leaky = pd.to_numeric(recomputed_full[col], errors="coerce").to_numpy(
+            dtype=float
+        )
         stored_vs_honest = np.isclose(stored, honest, equal_nan=True)
         stored_vs_full = np.isclose(stored, leaky, equal_nan=True)
         if stored_vs_full.all() and not stored_vs_honest.all():
@@ -209,7 +228,7 @@ def check_rolling_with_future(
     if raw_col not in df.columns or feature_col not in df.columns:
         return None
     work = df[[date_col, raw_col, feature_col]].copy()
-    work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
+    work[date_col] = parse_dates_flexible(work[date_col])
     work = work.sort_values(date_col).dropna(subset=[raw_col, date_col])
     if work.empty:
         return None
@@ -224,7 +243,9 @@ def check_rolling_with_future(
     grid = pd.date_range(daily_raw.index.min(), daily_raw.index.max(), freq="D")
     daily_raw = daily_raw.sort_index().reindex(grid)
 
-    backward = daily_raw.shift(1).rolling(window=window, min_periods=1, center=False).mean()
+    backward = (
+        daily_raw.shift(1).rolling(window=window, min_periods=1, center=False).mean()
+    )
     forward = daily_raw.rolling(window=window, min_periods=1, center=True).mean()
     stored_daily = pd.Series(
         pd.to_numeric(work[feature_col], errors="coerce").to_numpy(dtype=float),
@@ -296,14 +317,16 @@ def check_rolling_target_inclusion(
         if date_col is not None:
             if date_col not in frame.columns:
                 return 0
-            dates = pd.DatetimeIndex(pd.to_datetime(frame[date_col], errors="coerce"))
+            dates = pd.DatetimeIndex(parse_dates_flexible(frame[date_col]))
             frame = frame.loc[dates.notna()]
-            dates = pd.DatetimeIndex(pd.to_datetime(frame[date_col], errors="coerce"))
+            dates = pd.DatetimeIndex(parse_dates_flexible(frame[date_col]))
             if dates.empty:
                 return 0
             raw = (
                 pd.Series(
-                    pd.to_numeric(frame[target_col], errors="coerce").to_numpy(dtype=float),
+                    pd.to_numeric(frame[target_col], errors="coerce").to_numpy(
+                        dtype=float
+                    ),
                     index=dates,
                 )
                 .groupby(level=0)
@@ -314,14 +337,22 @@ def check_rolling_target_inclusion(
             daily = raw.reindex(grid)
             incl = getattr(daily.rolling(window=window, min_periods=1), stat)()
             excl = getattr(daily.shift(1).rolling(window=window, min_periods=1), stat)()
-            stored = pd.to_numeric(frame[feature_col], errors="coerce").to_numpy(dtype=float)
+            stored = pd.to_numeric(frame[feature_col], errors="coerce").to_numpy(
+                dtype=float
+            )
             incl_at = incl.reindex(dates).to_numpy(dtype=float)
             excl_at = excl.reindex(dates).to_numpy(dtype=float)
         else:
             raw = pd.to_numeric(frame[target_col], errors="coerce")
-            stored = pd.to_numeric(frame[feature_col], errors="coerce").to_numpy(dtype=float)
-            incl_at = getattr(raw.rolling(window=window, min_periods=1), stat)().to_numpy(dtype=float)
-            excl_at = getattr(raw.shift(1).rolling(window=window, min_periods=1), stat)().to_numpy(dtype=float)
+            stored = pd.to_numeric(frame[feature_col], errors="coerce").to_numpy(
+                dtype=float
+            )
+            incl_at = getattr(
+                raw.rolling(window=window, min_periods=1), stat
+            )().to_numpy(dtype=float)
+            excl_at = getattr(
+                raw.shift(1).rolling(window=window, min_periods=1), stat
+            )().to_numpy(dtype=float)
         incl_vs_excl = ~np.isclose(incl_at, excl_at, equal_nan=True)
         stored_vs_incl = np.isclose(stored, incl_at, equal_nan=True)
         stored_vs_excl = np.isclose(stored, excl_at, equal_nan=True)
@@ -359,8 +390,13 @@ def find_rolling_target_inclusions(
         if not m:
             continue
         finding = check_rolling_target_inclusion(
-            df, target_col, col, window=int(m.group(2)), stat=m.group(1),
-            date_col=date_col, group_col=group_col,
+            df,
+            target_col,
+            col,
+            window=int(m.group(2)),
+            stat=m.group(1),
+            date_col=date_col,
+            group_col=group_col,
         )
         if finding:
             findings.append(finding)
@@ -377,7 +413,9 @@ def assert_no_target_in_rolling(
     findings = find_rolling_target_inclusions(df, target_col, date_col, group_col)
     if findings:
         details = "; ".join(str(f) for f in findings)
-        raise LeakageError(f"Leakage de target en features ({len(findings)}): {details}")
+        raise LeakageError(
+            f"Leakage de target en features ({len(findings)}): {details}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -408,8 +446,11 @@ def run_leakage_suite(
 
     for name, (df, date_col) in frames.items():
         finding = check_future_values(
-            df, cutoff, value_cols=[c for c in df.columns if c != date_col],
-            obs_date_col=date_col, check=f"future_{name}",
+            df,
+            cutoff,
+            value_cols=[c for c in df.columns if c != date_col],
+            obs_date_col=date_col,
+            check=f"future_{name}",
         )
         if finding:
             report.findings.append(finding)
@@ -420,8 +461,12 @@ def run_leakage_suite(
             report.findings.append(finding)
 
     if train is not None and full is not None:
-        finding = check_feature_whole_dataset(train, full, feature_fn=feature_fn or (lambda d: d),
-                                              feature_cols=feature_cols)
+        finding = check_feature_whole_dataset(
+            train,
+            full,
+            feature_fn=feature_fn or (lambda d: d),
+            feature_cols=feature_cols,
+        )
         if finding:
             report.findings.append(finding)
 
@@ -443,6 +488,8 @@ def run_leakage_suite(
     return report
 
 
-def assert_as_of(df: pd.DataFrame, date_col: str, cutoff: pd.Timestamp, label: str = "") -> None:
+def assert_as_of(
+    df: pd.DataFrame, date_col: str, cutoff: pd.Timestamp, label: str = ""
+) -> None:
     """Wrapper explícito del contrato de corte (usado por tests y pipeline)."""
     enforce_cutoff(df, date_col, pd.Timestamp(cutoff), label)

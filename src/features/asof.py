@@ -14,6 +14,8 @@ from typing import Callable
 
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
+
 CUTOFF_ATTR = "_asof_cutoff"
 
 
@@ -21,16 +23,22 @@ class LeakageError(RuntimeError):
     """Se intentó usar información posterior a la fecha de corte."""
 
 
-def enforce_cutoff(df: pd.DataFrame, date_col: str, cutoff: pd.Timestamp, label: str = "") -> None:
+def enforce_cutoff(
+    df: pd.DataFrame, date_col: str, cutoff: pd.Timestamp, label: str = ""
+) -> None:
     """Falla si ``df`` contiene observaciones posteriores a ``cutoff``."""
     if df.empty:
         return
-    dates = pd.to_datetime(df[date_col], errors="coerce")
+    dates = parse_dates_flexible(df[date_col])
     if dates.isna().all():
-        raise LeakageError(f"{label}: columna de fecha ilegible; no se puede garantizar el corte")
+        raise LeakageError(
+            f"{label}: columna de fecha ilegible; no se puede garantizar el corte"
+        )
     latest = dates.max()
     if latest > cutoff:
-        future = sorted(str(pd.Timestamp(d).date()) for d in dates[dates > cutoff].unique())[:5]
+        future = sorted(
+            str(pd.Timestamp(d).date()) for d in dates[dates > cutoff].unique()
+        )[:5]
         raise LeakageError(
             f"{label or 'dataset'} viola el corte as-of {pd.Timestamp(cutoff).date()}: "
             f"contiene {int((dates > cutoff).sum())} observaciones futuras "
@@ -59,7 +67,7 @@ class AsOfBuilder:
     # -- contrato central --------------------------------------------------
     def frame(self, df: pd.DataFrame, label: str = "features") -> pd.DataFrame:
         """Devuelve solo las filas observadas ≤ cutoff (y valida el resultado)."""
-        dates = pd.to_datetime(df[self.date_col], errors="coerce")
+        dates = parse_dates_flexible(df[self.date_col])
         out = df.loc[dates <= self.cutoff].copy()
         enforce_cutoff(out, self.date_col, self.cutoff, label)
         return out
@@ -81,7 +89,9 @@ class AsOfBuilder:
             enforce_cutoff(out, self.date_col, self.cutoff, label)
         elif isinstance(out.index, pd.DatetimeIndex):
             if out.index.max() > self.cutoff:
-                raise LeakageError(f"{label}: el índice resultante excede el corte {self.cutoff.date()}")
+                raise LeakageError(
+                    f"{label}: el índice resultante excede el corte {self.cutoff.date()}"
+                )
         return out
 
     def filter_future_targets(
@@ -92,14 +102,16 @@ class AsOfBuilder:
         Para un corte T, una fecha de estancia > T solo puede usarse como
         *predicción*, nunca como feature ni como target de entrenamiento.
         """
-        dates = pd.to_datetime(df[stay_date_col], errors="coerce")
+        dates = parse_dates_flexible(df[stay_date_col])
         return df.loc[dates <= self.cutoff].copy()
 
 
 def lag(series: pd.Series, periods: int) -> pd.Series:
     """Lag retrospectivo (positivo = hacia atrás). Nunca mira al futuro."""
     if periods < 0:
-        raise ValueError(f"lag negativo ({periods}) miraría al futuro; use shift(-n) con cuidado")
+        raise ValueError(
+            f"lag negativo ({periods}) miraría al futuro; use shift(-n) con cuidado"
+        )
     return series.shift(periods)
 
 

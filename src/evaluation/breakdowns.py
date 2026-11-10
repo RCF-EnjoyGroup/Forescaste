@@ -11,16 +11,25 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
 from src.evaluation.metrics import MetricResult, compute_metrics
 
 LEAD_BINS = [-np.inf, 2, 6, 13, 29, 59, 89, np.inf]
 LEAD_LABELS = ["1-2", "3-6", "7-13", "14-29", "30-59", "60-89", "90+"]
 
 SEASON_MAP = {
-    12: "high", 1: "high", 2: "high",
-    3: "shoulder", 4: "shoulder", 5: "shoulder",
-    10: "shoulder", 11: "shoulder",
-    6: "low", 7: "low", 8: "low", 9: "low",
+    12: "high",
+    1: "high",
+    2: "high",
+    3: "shoulder",
+    4: "shoulder",
+    5: "shoulder",
+    10: "shoulder",
+    11: "shoulder",
+    6: "low",
+    7: "low",
+    8: "low",
+    9: "low",
 }
 
 
@@ -33,7 +42,7 @@ def season_of_stay(dates: pd.Series) -> pd.Series:
     lookahead) — alimenta las celdas estacionales de calibración de
     banda y bias.
     """
-    return pd.to_datetime(pd.Series(dates), errors="coerce").dt.month.map(SEASON_MAP)
+    return parse_dates_flexible(pd.Series(dates)).dt.month.map(SEASON_MAP)
 
 
 def lead_band(lead_days) -> str:
@@ -178,9 +187,13 @@ def metrics_by_lead_band(
         raise ValueError(f"{int(unknown.sum())} observaciones con lead no clasificable")
     out = _metrics_by(work, ["_lead_band"], actual_col, forecast_col)
     out = out.rename(columns={"_lead_band": "lead_band"})
-    out["lead_band"] = pd.Categorical(out["lead_band"], categories=LEAD_LABELS, ordered=True)
+    out["lead_band"] = pd.Categorical(
+        out["lead_band"], categories=LEAD_LABELS, ordered=True
+    )
     # cobertura: la suma de n_obs coincide con el total
-    assert int(out["n_obs"].sum()) == len(work), "las bandas no particionan las observaciones"
+    assert int(out["n_obs"].sum()) == len(work), (
+        "las bandas no particionan las observaciones"
+    )
     return out.sort_values("lead_band").reset_index(drop=True)
 
 
@@ -224,7 +237,7 @@ def metrics_by_property_weekly(
     de nivel. ``n_obs`` cuenta semanas, no días.
     """
     work = df.copy()
-    dates = pd.to_datetime(work[date_col], errors="coerce")
+    dates = parse_dates_flexible(work[date_col])
     work["_week"] = dates.dt.to_period("W-SUN")
     agg = (
         work.dropna(subset=["_week"])
@@ -234,8 +247,16 @@ def metrics_by_property_weekly(
     )
     if agg.empty:
         return pd.DataFrame(
-            columns=[property_col, "mape", "wmape", "mae", "rmse", "bias",
-                     "n_obs", "n_mape_excluded"]
+            columns=[
+                property_col,
+                "mape",
+                "wmape",
+                "mae",
+                "rmse",
+                "bias",
+                "n_obs",
+                "n_mape_excluded",
+            ]
         )
     out = _metrics_by(agg, [property_col], actual_col, forecast_col)
     return out.sort_values("wmape").reset_index(drop=True)
@@ -250,9 +271,7 @@ def property_ranking(table: pd.DataFrame) -> dict:
         "best": sorted_t.iloc[0]["property"],
         "worst": sorted_t.iloc[-1]["property"],
         "error_volatility": float(table["wmape"].std()) if len(table) > 1 else 0.0,
-        "worst_bias": float(
-            table.loc[table["wmape"].idxmax(), "bias"]
-        ),
+        "worst_bias": float(table.loc[table["wmape"].idxmax(), "bias"]),
     }
 
 
@@ -264,7 +283,7 @@ def metrics_by_seasonality(
 ) -> dict[str, pd.DataFrame]:
     """6.5 — Desgloses: mes, día de semana, weekend/weekday, temporada."""
     work = df.copy()
-    dates = pd.to_datetime(work[date_col], errors="coerce")
+    dates = parse_dates_flexible(work[date_col])
     work["_month"] = dates.dt.month
     work["_dow"] = dates.dt.dayofweek
     work["_weekend"] = np.where(work["_dow"] >= 5, "weekend", "weekday")
@@ -280,9 +299,9 @@ def metrics_by_seasonality(
         "day_of_week": _metrics_by(work, ["_dow"], actual_col, forecast_col).rename(
             columns={"_dow": "day_of_week"}
         ),
-        "weekend_weekday": _metrics_by(work, ["_weekend"], actual_col, forecast_col).rename(
-            columns={"_weekend": "day_type"}
-        ),
+        "weekend_weekday": _metrics_by(
+            work, ["_weekend"], actual_col, forecast_col
+        ).rename(columns={"_weekend": "day_type"}),
         "season": _metrics_by(work, ["_season"], actual_col, forecast_col).rename(
             columns={"_season": "season"}
         ),

@@ -12,6 +12,7 @@ from typing import Callable
 
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
 from src.features.asof import AsOfBuilder, enforce_cutoff
 
 
@@ -29,7 +30,9 @@ class SnapshotEvaluation:
         """Forecast vs actual por (property, stay_date)."""
         p = self.predictions.rename(columns={"forecast_rn": "forecast"})
         a = self.actuals.rename(columns={"room_nights": "actual"})
-        keys = [c for c in ("property", "stay_date") if c in p.columns and c in a.columns]
+        keys = [
+            c for c in ("property", "stay_date") if c in p.columns and c in a.columns
+        ]
         return p.merge(a, on=keys, how="inner", suffixes=("_f", "_a"))
 
 
@@ -78,15 +81,15 @@ def evaluate_at_cutoff(
     # es correcto: es lo que se intenta predecir), pero el history de entrada
     # ya está congelado.
     pred = predictions.copy()
-    pred[date_col] = pd.to_datetime(pred[date_col], errors="coerce")
+    pred[date_col] = parse_dates_flexible(pred[date_col])
 
     # los actuales se toman del frame completo (son la verdad posterior)
     act = actuals[[property_col, date_col, value_col]].copy()
-    act[date_col] = pd.to_datetime(act[date_col], errors="coerce")
+    act[date_col] = parse_dates_flexible(act[date_col])
 
     from src.monitoring.run_manifest import fingerprint
 
-    history_max = pd.to_datetime(history_asof[date_col]).max()
+    history_max = parse_dates_flexible(history_asof[date_col]).max()
     return SnapshotEvaluation(
         cutoff=cutoff,
         predictions=pred,
@@ -135,7 +138,9 @@ def assert_no_future_reads(result: MultiStepResult) -> None:
         if snap.predictions.empty:
             raise AssertionError(f"snapshot {snap.cutoff.date()} sin predicciones")
         if snap.history_max_observed is None:
-            raise AssertionError(f"snapshot {snap.cutoff.date()} sin huella de historial")
+            raise AssertionError(
+                f"snapshot {snap.cutoff.date()} sin huella de historial"
+            )
         if pd.Timestamp(snap.history_max_observed) > pd.Timestamp(snap.cutoff):
             raise AssertionError(
                 f"snapshot {snap.cutoff.date()} leyó historia hasta "

@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
 from src.features.calendar import season_of_month
 
 
@@ -37,7 +38,9 @@ class SeasonalNaive:
 
     def fit(self, history: pd.DataFrame) -> "SeasonalNaive":
         self._history = history.copy()
-        self._history[self.date_col] = pd.to_datetime(self._history[self.date_col])
+        self._history[self.date_col] = parse_dates_flexible(
+            self._history[self.date_col]
+        )
         self._history = self._history.sort_values(self.date_col)
         return self
 
@@ -121,7 +124,9 @@ class PickupCurveModel:
         df = df.loc[df[self.lead_col] >= self.min_lead]
         df[self.date_col] = pd.to_datetime(df[self.date_col], errors="coerce")
         if self.max_history_days is not None and not df.empty:
-            keep_from = df[self.date_col].max() - pd.Timedelta(days=int(self.max_history_days))
+            keep_from = df[self.date_col].max() - pd.Timedelta(
+                days=int(self.max_history_days)
+            )
             df = df.loc[df[self.date_col] >= keep_from]
         if self.bin_edges is not None:
             edges_arr = np.asarray(self.bin_edges, dtype=float)
@@ -138,11 +143,17 @@ class PickupCurveModel:
         else:
             max_lead = int(df[self.lead_col].max()) if len(df) else 365
             self.max_lead_ = max_lead
-            edges = np.linspace(self.min_lead, max(max_lead, self.min_lead) + 1, self.n_bins + 1)
-        df["_bin"] = pd.cut(df[self.lead_col], bins=edges, include_lowest=True, right=False)
+            edges = np.linspace(
+                self.min_lead, max(max_lead, self.min_lead) + 1, self.n_bins + 1
+            )
+        df["_bin"] = pd.cut(
+            df[self.lead_col], bins=edges, include_lowest=True, right=False
+        )
         by_prop: dict[str, pd.Series] = {}
         for prop, grp in df.groupby(self.property_col):
-            by_prop[str(prop)] = grp.groupby("_bin", observed=True)[self.pickup_col].mean()
+            by_prop[str(prop)] = grp.groupby("_bin", observed=True)[
+                self.pickup_col
+            ].mean()
         self.curves_ = by_prop
         self.global_curve_ = df.groupby("_bin", observed=True)[self.pickup_col].mean()
         self.season_curves_: dict[tuple[str, str], pd.Series] = {}
@@ -150,12 +161,14 @@ class PickupCurveModel:
             df["_season"] = df[self.date_col].dt.month.map(
                 lambda m: season_of_month(m) if pd.notna(m) else None
             )
-            for (prop, season), grp in df.groupby([self.property_col, "_season"], dropna=True):
+            for (prop, season), grp in df.groupby(
+                [self.property_col, "_season"], dropna=True
+            ):
                 n_stays = int(grp[self.date_col].nunique())
                 if n_stays >= int(self.min_stays_per_bucket):
-                    self.season_curves_[(str(prop), str(season))] = (
-                        grp.groupby("_bin", observed=True)[self.pickup_col].mean()
-                    )
+                    self.season_curves_[(str(prop), str(season))] = grp.groupby(
+                        "_bin", observed=True
+                    )[self.pickup_col].mean()
         self.holiday_curves_: dict[tuple[str, str], pd.Series] = {}
         if self.holiday_conditional and self.holiday_calendar is not None:
             holiday_min = (
@@ -173,12 +186,14 @@ class PickupCurveModel:
                     for d in stay_dates_g
                 ]
             df["_holiday"] = keys.to_numpy()
-            for (prop, hkey), grp in df.groupby([self.property_col, "_holiday"], dropna=True):
+            for (prop, hkey), grp in df.groupby(
+                [self.property_col, "_holiday"], dropna=True
+            ):
                 n_stays = int(grp[self.date_col].nunique())
                 if n_stays >= holiday_min:
-                    self.holiday_curves_[(str(prop), str(hkey))] = (
-                        grp.groupby("_bin", observed=True)[self.pickup_col].mean()
-                    )
+                    self.holiday_curves_[(str(prop), str(hkey))] = grp.groupby(
+                        "_bin", observed=True
+                    )[self.pickup_col].mean()
         return self
 
     def _curve_for(self, prop: str, stay_date, lead: int | None = None) -> pd.Series:
@@ -224,7 +239,11 @@ class PickupCurveModel:
         rows = []
         for _, r in requests.iterrows():
             expected_pickup = max(
-                self._lookup(str(r[self.property_col]), int(r[self.lead_col]), r.get(self.date_col)),
+                self._lookup(
+                    str(r[self.property_col]),
+                    int(r[self.lead_col]),
+                    r.get(self.date_col),
+                ),
                 0.0,
             )
             rows.append(

@@ -15,6 +15,8 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
+
 Severity = Literal["info", "warning", "alert"]
 
 
@@ -50,9 +52,9 @@ class DriftAlert:
 
 # Umbrales conservadores (design: arrancar conservador y re-calibrar)
 DRIFT_THRESHOLDS = {
-    "mape": {"warning": 0.10, "alert": 0.25},     # relativo
+    "mape": {"warning": 0.10, "alert": 0.25},  # relativo
     "wmape": {"warning": 0.10, "alert": 0.25},
-    "bias": {"warning": 0.05, "alert": 0.10},     # absoluto (puntos)
+    "bias": {"warning": 0.05, "alert": 0.10},  # absoluto (puntos)
 }
 
 
@@ -195,7 +197,7 @@ def demand_drift_alerts(
     """
     cutoff = pd.Timestamp(cutoff)
     work = history.copy()
-    work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
+    work[date_col] = parse_dates_flexible(work[date_col])
     work[value_col] = pd.to_numeric(work[value_col], errors="coerce")
 
     cur_start = cutoff - pd.Timedelta(days=current_window_days)
@@ -261,7 +263,9 @@ def check_pickup_curve_drift(
     common = ref.index.intersection(cur.index)
     if len(common) == 0:
         return None
-    rel = ((cur.loc[common] - ref.loc[common]).abs() / ref.loc[common].replace(0, np.nan)).dropna()
+    rel = (
+        (cur.loc[common] - ref.loc[common]).abs() / ref.loc[common].replace(0, np.nan)
+    ).dropna()
     if rel.empty:
         return None
     mean_shift = float(rel.mean())
@@ -298,7 +302,9 @@ def run_drift_suite(
     alerts = check_metric_drift(reference_metrics, current_metrics)
 
     if reference_demand is not None and current_demand is not None:
-        a = check_distribution_drift(reference_demand, current_demand, "demand_distribution")
+        a = check_distribution_drift(
+            reference_demand, current_demand, "demand_distribution"
+        )
         if a:
             alerts.append(a)
 
@@ -309,7 +315,9 @@ def run_drift_suite(
 
     if feature_reference is not None and feature_current is not None:
         for col in feature_reference.columns:
-            if col in feature_current.columns and pd.api.types.is_numeric_dtype(feature_reference[col]):
+            if col in feature_current.columns and pd.api.types.is_numeric_dtype(
+                feature_reference[col]
+            ):
                 a = check_distribution_drift(
                     feature_reference[col], feature_current[col], f"feature:{col}"
                 )
@@ -323,12 +331,12 @@ def run_drift_suite(
 # --------------------------------------------------------------------------
 
 OUTLIER_CATEGORIES = (
-    "data_error",      # error de datos
-    "event",           # evento real
-    "group",           # grupo
-    "seasonality",     # temporada
-    "structural",      # cambio estructural
-    "unclassified",    # no clasificado aún
+    "data_error",  # error de datos
+    "event",  # evento real
+    "group",  # grupo
+    "seasonality",  # temporada
+    "structural",  # cambio estructural
+    "unclassified",  # no clasificado aún
 )
 
 
@@ -406,7 +414,7 @@ def detect_outliers(
     """
     out: list[ClassifiedOutlier] = []
     work = df.copy()
-    work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
+    work[date_col] = parse_dates_flexible(work[date_col])
     # orden cronológico dentro de cada propiedad: la clasificación
     # estructural (nivel que se mantiene tras el pico) asume secuencia
     work = work.sort_values([property_col, date_col], kind="stable")
@@ -464,7 +472,10 @@ def _classify(*, row, zscore, date, grp, capacity_col, value_col) -> tuple[str, 
     # capacidad reducida ese día: no es demanda anómala, es inventario
     if capacity_col and capacity_col in grp.columns:
         cap_mean = pd.to_numeric(grp[capacity_col], errors="coerce").mean()
-        if pd.notna(row.get(capacity_col)) and float(row[capacity_col]) < cap_mean * 0.7:
+        if (
+            pd.notna(row.get(capacity_col))
+            and float(row[capacity_col]) < cap_mean * 0.7
+        ):
             return (
                 "structural",
                 f"capacidad reducida ({float(row[capacity_col]):.0f} vs media {cap_mean:.0f})",
@@ -485,19 +496,37 @@ def _classify(*, row, zscore, date, grp, capacity_col, value_col) -> tuple[str, 
         idx = idx.start or 0
     try:
         after = grp.iloc[int(idx) + 1 : int(idx) + 8][value_col].astype(float)
-        if len(after) >= 3 and zscore > 0 and after.mean() > grp[value_col].astype(float).mean() * 1.15:
-            return ("structural", "el nivel se mantiene elevado después del pico (cambio estructural)")
+        if (
+            len(after) >= 3
+            and zscore > 0
+            and after.mean() > grp[value_col].astype(float).mean() * 1.15
+        ):
+            return (
+                "structural",
+                "el nivel se mantiene elevado después del pico (cambio estructural)",
+            )
     except Exception:  # pragma: no cover - posicionamiento defensivo
         pass
 
     # evento: aislado (el entorno vuelve a la normalidad)
-    return ("event", f"pico aislado |z|={abs(zscore):.1f} con entorno normal (evento real: se conserva)")
+    return (
+        "event",
+        f"pico aislado |z|={abs(zscore):.1f} con entorno normal (evento real: se conserva)",
+    )
 
 
 def classified_frame(outliers: list[ClassifiedOutlier]) -> pd.DataFrame:
     if not outliers:
         return pd.DataFrame(
-            columns=["property", "date", "value", "zscore", "category", "rationale", "removed"]
+            columns=[
+                "property",
+                "date",
+                "value",
+                "zscore",
+                "category",
+                "rationale",
+                "removed",
+            ]
         )
     return pd.DataFrame([o.to_dict() for o in outliers])
 

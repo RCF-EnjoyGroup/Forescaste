@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
+
 
 @dataclass(frozen=True)
 class TimeWindow:
@@ -58,7 +60,7 @@ def expanding_windows(
         ``True`` → train crece desde ``train_start`` fijo (expanding).
         ``False`` → train se desplaza con la ventana (rolling).
     """
-    dates = pd.to_datetime(df[date_col], errors="coerce").dropna()
+    dates = parse_dates_flexible(df[date_col]).dropna()
     if dates.empty:
         raise ValueError("sin fechas para generar ventanas")
     start, end = dates.min(), dates.max()
@@ -69,12 +71,16 @@ def expanding_windows(
     train_start = start
     cursor = start + pd.Timedelta(days=min_train_days)
     fold = 0
-    while fold < n_splits and cursor + pd.Timedelta(days=val_days) <= end + pd.Timedelta(days=1):
+    while fold < n_splits and cursor + pd.Timedelta(
+        days=val_days
+    ) <= end + pd.Timedelta(days=1):
         val_start = cursor
         val_end = cursor + pd.Timedelta(days=val_days)
         w = TimeWindow(
             fold=fold,
-            train_start=train_start if expanding else cursor - pd.Timedelta(days=min_train_days),
+            train_start=train_start
+            if expanding
+            else cursor - pd.Timedelta(days=min_train_days),
             train_end=val_start,
             val_start=val_start,
             val_end=val_end,
@@ -96,11 +102,14 @@ def slice_window(
     df: pd.DataFrame, window: TimeWindow, date_col: str = "stay_date"
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Recorta train/val garantizando orden temporal estricto."""
-    dates = pd.to_datetime(df[date_col], errors="coerce")
+    dates = parse_dates_flexible(df[date_col])
     train = df.loc[(dates >= window.train_start) & (dates < window.train_end)]
     val = df.loc[(dates >= window.val_start) & (dates < window.val_end)]
     if train.empty or val.empty:
         raise ValueError(f"fold {window.fold}: train o val vacío")
-    if pd.to_datetime(val[date_col]).min() <= pd.to_datetime(train[date_col]).max():
+    if (
+        parse_dates_flexible(val[date_col]).min()
+        <= parse_dates_flexible(train[date_col]).max()
+    ):
         raise ValueError(f"fold {window.fold}: solape temporal train/val")
     return train, val
