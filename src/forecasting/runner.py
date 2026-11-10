@@ -1072,8 +1072,14 @@ def run_end_to_end(
     learned_calibration: dict[str, float] = {}
     if coverage is not None and eval_src is not None:
         _learned = learn_band_calibration(eval_src)
+        # se guarda el k CRUDO (mínimo que devuelve la cobertura al
+        # nominal): el shrink se aplica al CONSUMIR, con el shrinkage_obs
+        # de la corrida — así un cambio de política de shrink no necesita
+        # re-aprender, y no hay doble shrink registro→knob
         learned_calibration = {
-            str(k): float(v) for k, v in (_learned.get("k_by_property") or {}).items()
+            str(d["property"]): float(d["k"])
+            for d in (_learned.get("detail") or [])
+            if d.get("k") is not None
         }
 
     evaluated_props = (
