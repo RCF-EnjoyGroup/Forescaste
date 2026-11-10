@@ -1290,7 +1290,11 @@ def _kpi_grid(kpis: dict | None, champion: str | None = None) -> str:
     return '<div class="kpis">' + "".join(cells) + "</div>"
 
 
-def _fmt_metrics(metrics: dict | None) -> str:
+def _fmt_metrics(
+    metrics: dict | None,
+    metrics_excl_cold_start: dict | None = None,
+    excluded_cold_start: dict | None = None,
+) -> str:
     if not metrics:
         return '<p class="muted">Sin métricas en esta corrida.</p>'
     rows = []
@@ -1319,6 +1323,20 @@ def _fmt_metrics(metrics: dict | None) -> str:
         "(se guardan como fracción), MAPE en porcentaje, n obs como conteo."
         "</p>"
     )
+    if metrics_excl_cold_start and excluded_cold_start:
+        # contexto del headline: el MAPE global mezcla propiedades chicas
+        # y cold-start (provisionales por diseño) — se publica junto, no
+        # en reemplazo (openspec 2026-11-10-kpi-volume-truth)
+        _m = metrics_excl_cold_start
+        nota += (
+            '<p style="font-size:0.78em;color:#64748b;margin:4px 0 0 0">'
+            f"Excluyendo cold-start ({', '.join(sorted(excluded_cold_start))}): "
+            f"MAPE {float(_m.get('mape', float('nan'))):.1f}% · "
+            f"WMAPE {float(_m.get('wmape', float('nan'))):.2%} · "
+            f"bias {float(_m.get('bias', float('nan'))):+.2%}. "
+            "El global de arriba incluye esas propiedades a propósito."
+            "</p>"
+        )
     return ('<table class="tbl"><thead><tr><th>Métrica</th><th>Valor</th></tr></thead>'
             "<tbody>" + "".join(rows) + "</tbody></table>" + nota)
 
@@ -1330,6 +1348,8 @@ def generate_visual_report(
     demand: pd.DataFrame | None = None,
     benchmark: pd.DataFrame | None = None,
     metrics: dict | None = None,
+    metrics_excl_cold_start: dict | None = None,
+    excluded_cold_start: dict | None = None,
     kpis: dict | None = None,
     actual: pd.Series | None = None,
     actual_note: str | None = None,
@@ -1509,7 +1529,7 @@ def generate_visual_report(
         _card("EDA", _chart_eda(demand), wide=True),
         (
             '<section class="card"><h2>Métricas</h2>'
-            f"{_fmt_metrics(metrics)}</section>"
+            f"{_fmt_metrics(metrics, metrics_excl_cold_start, excluded_cold_start)}</section>"
         ),
         _glossary_card(),
     ]

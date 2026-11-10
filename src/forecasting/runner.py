@@ -1018,6 +1018,7 @@ def run_end_to_end(
     # ---------- 9. métricas + desgloses + cobertura de evaluación
     eval_src: pd.DataFrame | None = None
     metrics: dict[str, float] = {}
+    metrics_excl_cold_start: dict[str, float] = {}
     breakdowns: dict[str, pd.DataFrame] = {}
     if eval_frame is not None and not eval_frame.empty:
         missing_cols = sorted(
@@ -1047,6 +1048,18 @@ def run_end_to_end(
             pd.to_numeric(eval_src["lead_days"], errors="coerce").fillna(30).astype(int)
         )
         metrics = compute_metrics(eval_src["actual"], eval_src["forecast"]).to_dict()
+        # KPI honesto (openspec 2026-11-10-kpi-volume-truth): el MAPE global
+        # mezcla propiedades chicas y cold-start (provisionales por diseño).
+        # El bloque excluido se PUBLICA junto al global — el global no se
+        # toca: agregar contexto, no ocultar.
+        _cold_props = set(cold_start_properties)
+        _sin_cold = eval_src.loc[
+            ~eval_src["property"].astype(str).isin(_cold_props)
+        ]
+        if _cold_props and not _sin_cold.empty:
+            metrics_excl_cold_start = compute_metrics(
+                _sin_cold["actual"], _sin_cold["forecast"]
+            ).to_dict()
         breakdowns = {
             "lead_band": metrics_by_lead_band(eval_src),
             "property": metrics_by_property(eval_src),
@@ -1176,6 +1189,19 @@ def run_end_to_end(
         kpis["mape_excluded_zero_actual"] = float(metrics.get("n_mape_excluded", 0.0))
     kpis["n_properties_evaluated"] = float(len(evaluated_props))
     kpis["n_properties_portfolio"] = float(len(props))
+    if metrics_excl_cold_start:
+        # etiquetados: precisión del portafolio SIN las propiedades que el
+        # propio motor declara cold-start (forecast provisional por diseño)
+        kpis["forecast_accuracy_mape_excl_cold_start"] = metrics_excl_cold_start.get(
+            "mape", float("nan")
+        )
+        kpis["forecast_accuracy_wmape_excl_cold_start"] = metrics_excl_cold_start.get(
+            "wmape", float("nan")
+        )
+        kpis["forecast_bias_excl_cold_start"] = metrics_excl_cold_start.get(
+            "bias", float("nan")
+        )
+        kpis["n_cold_start_excluded"] = float(len(cold_start_properties))
 
     # ---------- 10b. tracking vintage: el forecast publicado ANTERIOR se
     # puntúa contra los reales materializados desde entonces (mide el
@@ -1392,6 +1418,17 @@ def run_end_to_end(
     if metrics:
         accuracy_report = {
             "global": _jsonable(metrics),
+            # KPI honesto (openspec 2026-11-10-kpi-volume-truth): el MAPE
+            # global mezcla cold-start; el bloque excluido se publica junto
+            # al global (que NO se reemplaza) con la razón de cada exclusión
+            **(
+                {
+                    "global_excl_cold_start": _jsonable(metrics_excl_cold_start),
+                    "excluded_cold_start": _jsonable(cold_start_properties),
+                }
+                if metrics_excl_cold_start
+                else {}
+            ),
             "by_lead_band": _jsonable(
                 breakdowns.get("lead_band", pd.DataFrame()).to_dict("records")
             ),
@@ -1542,6 +1579,8 @@ def run_end_to_end(
             demand=dem,
             benchmark=benchmark.table,
             metrics=metrics,
+            metrics_excl_cold_start=metrics_excl_cold_start,
+            excluded_cold_start=cold_start_properties,
             kpis=kpis,
             actual=actual_series,
             actual_note=actual_note,
