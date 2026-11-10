@@ -42,7 +42,7 @@ def _closed_config(excluded: list[str], horizon: int = 30) -> EngineConfig:
 def _demand_3props(n=300, start="2025-01-01", seed=7):
     rng = np.random.default_rng(seed)
     dates = pd.date_range(start, periods=n, freq="D")
-    dow = dates.dayofweek
+    dow = dates.day_of_week
     base = 55 + 12 * (dow >= 5)
     frames = []
     for prop, mult in (("corin", 1.0), ("fiesta", 0.6), ("cerrada", 0.4)):

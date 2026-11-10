@@ -73,7 +73,7 @@ def _load_all():
     excl = [str(p) for p in cfg.excluded_properties]
     for df, col in ((demand, ds.property_col), (capacity, cs.property_col),
                     (pickup, ps.property_col)):
-        df.drop(df[df[col].astype(str).isin(excl)].index, inplace=True)
+        df = df.drop(df[df[col].astype(str).isin(excl)].index)
     dem = _normalize_demand(demand, ds)
     _normalize_capacity(capacity, cs)
     pick = _normalize_pickup(pickup, ps)

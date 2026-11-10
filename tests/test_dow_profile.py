@@ -38,7 +38,7 @@ def _demand_patron(n=200, prop="corin"):
     """Jueves valle (20) vs resto (60) + ruido leve."""
     dates = pd.date_range("2026-01-01", periods=n)
     rng = np.random.default_rng(7)
-    rn = np.where(dates.dayofweek == 3, 20.0, 60.0) + rng.normal(0, 2, n)
+    rn = np.where(dates.day_of_week == 3, 20.0, 60.0) + rng.normal(0, 2, n)
     return pd.DataFrame({
         "property": [prop] * n,
         "stay_date": dates,
@@ -92,7 +92,7 @@ def test_perfil_dow_solo_historia_asof():
     # contaminar el futuro (posteriores al corte) con un patron distinto
     futuro = dem["stay_date"] > cutoff
     dem.loc[futuro, "room_nights"] = np.where(
-        dem.loc[futuro, "stay_date"].dt.dayofweek == 2, 5.0, 90.0
+        dem.loc[futuro, "stay_date"].dt.day_of_week == 2, 5.0, 90.0
     )
     profile = _dow_profile(dem, cutoff)
     assert profile is not None
@@ -142,7 +142,7 @@ def test_blend_empalma_stats_con_perfil_dow(collapse_forzado):
     pred_sx["lead_days"] = (pred_sx["stay_date"] - cutoff).dt.days
     profile = _dow_profile(dem, cutoff)
     esperado = pred_sx.set_index("stay_date").copy()
-    esperado["factor"] = esperado.index.dayofweek
+    esperado["factor"] = esperado.index.day_of_week
     esperado["factor"] = esperado["factor"].map(profile)
     esperado["raw"] = esperado["raw_forecast_rn"] * esperado["factor"]
 
@@ -155,8 +155,8 @@ def test_blend_empalma_stats_con_perfil_dow(collapse_forzado):
     ), "el segmento largo debe ser sarimax x perfil"
 
     # el patron es visible: los jueves del horizonte quedan por debajo del resto
-    jue = largo[largo.index.dayofweek == 3]["raw_forecast_rn"].mean()
-    resto = largo[largo.index.dayofweek != 3]["raw_forecast_rn"].mean()
+    jue = largo[largo.index.day_of_week == 3]["raw_forecast_rn"].mean()
+    resto = largo[largo.index.day_of_week != 3]["raw_forecast_rn"].mean()
     assert jue < resto, "el jueves valle de la historia debe verse en el horizonte"
 
 

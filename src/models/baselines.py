@@ -51,7 +51,7 @@ class SeasonalNaive:
         last = hist[self.value_col].iloc[-1]
         for d in dates:
             # últimas K ocurrencias del mismo día de la semana previas a d
-            same_dow = hist.loc[hist[self.date_col].dt.dayofweek == d.dayofweek]
+            same_dow = hist.loc[hist[self.date_col].dt.day_of_week == d.day_of_week]
             same_dow = same_dow.loc[same_dow[self.date_col] < d]
             window = same_dow[self.value_col].tail(max(int(self.dow_window), 1))
             value = float(window.mean()) if len(window) else float(last)

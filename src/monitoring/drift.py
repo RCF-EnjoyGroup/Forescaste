@@ -482,7 +482,7 @@ def _classify(*, row, zscore, date, grp, capacity_col, value_col) -> tuple[str, 
             )
 
     # fin de semana / temporada alta: patrón estacional conocido
-    dow = date.dayofweek
+    dow = date.day_of_week
     if dow >= 5 and zscore > 0:
         return ("seasonality", f"fin de semana (dow={dow}) con pico positivo")
 

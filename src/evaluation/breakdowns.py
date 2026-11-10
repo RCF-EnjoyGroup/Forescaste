@@ -285,7 +285,7 @@ def metrics_by_seasonality(
     work = df.copy()
     dates = parse_dates_flexible(work[date_col])
     work["_month"] = dates.dt.month
-    work["_dow"] = dates.dt.dayofweek
+    work["_dow"] = dates.dt.day_of_week
     work["_weekend"] = np.where(work["_dow"] >= 5, "weekend", "weekday")
     work["_season"] = pd.Categorical(
         dates.dt.month.map(SEASON_MAP),

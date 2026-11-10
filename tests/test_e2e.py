@@ -21,7 +21,7 @@ from src.monitoring.run_manifest import read_manifest
 def _demand(n=500, start="2025-01-01", seed=11):
     rng = np.random.default_rng(seed)
     dates = pd.date_range(start, periods=n, freq="D")
-    dow = dates.dayofweek
+    dow = dates.day_of_week
     base = 55 + 12 * (dow >= 5)  # fin de semana más alto
     seasonal = 10 * np.sin(2 * np.pi * np.arange(n) / 365.25)
     return pd.DataFrame(

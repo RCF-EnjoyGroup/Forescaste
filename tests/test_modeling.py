@@ -258,7 +258,7 @@ def test_sarimax_ajusta_y_predice():
 def _ml_dataset(n=300, seed=2):
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2025-01-01", periods=n, freq="D")
-    dow = dates.dayofweek.to_numpy()
+    dow = dates.day_of_week.to_numpy()
     booked = rng.integers(30, 70, size=n).astype(float)
     cap = np.full(n, 100.0)
     target = booked + 10 * (dow >= 5) + rng.normal(0, 3, n)

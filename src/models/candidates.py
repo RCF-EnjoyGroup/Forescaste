@@ -80,6 +80,16 @@ class SARIMAXModel:
 # --------------------------------------------------------------------------
 
 
+def _es_categorica(s: pd.Series) -> bool:
+    """Object, category o string dtype (pandas 3 PDEP-14) cuentan como categórica.
+
+    pandas 3 dio a las columnas de strings su propio dtype: el filtro
+    ``dtype == object`` ya no las ve, y los tres GBM fallan con ValueError al
+    recibir una columna str.
+    """
+    return s.dtype == object or str(s.dtype) == "category" or pd.api.types.is_string_dtype(s)
+
+
 def _split_xy(
     df: pd.DataFrame, target_col: str, feature_cols: list[str]
 ) -> tuple[pd.DataFrame, np.ndarray]:
@@ -92,7 +102,7 @@ def _split_xy(
     X = X.loc[mask]
     # codificar categóricas como string para todos los boosting
     for col in X.columns:
-        if X[col].dtype == object or str(X[col].dtype) == "category":
+        if _es_categorica(X[col]):
             X[col] = X[col].astype(str)
     return X, y.loc[mask].to_numpy(dtype=float)
 
@@ -105,7 +115,7 @@ class LightGBMModel:
         import lightgbm as lgb
 
         X, y = _split_xy(df, target_col, feature_cols)
-        categorical = [c for c in X.columns if X[c].dtype == object]
+        categorical = [c for c in X.columns if _es_categorica(X[c])]
         self._model = lgb.LGBMModel(**self.params)
         self._model.fit(X, y, categorical_feature=categorical or None)
         self.feature_cols_ = feature_cols
@@ -114,7 +124,7 @@ class LightGBMModel:
     def predict(self, df: pd.DataFrame) -> np.ndarray:
         X = df[self.feature_cols_].copy()
         for col in X.columns:
-            if X[col].dtype == object or str(X[col].dtype) == "category":
+            if _es_categorica(X[col]):
                 X[col] = X[col].astype(str)
         return np.asarray(self._model.predict(X), dtype=float)
 
@@ -134,7 +144,7 @@ class XGBoostModel:
 
         X, y = _split_xy(df, target_col, feature_cols)
         # one-hot para categóricas (xgboost no acepta object en versiones nuevas)
-        X = pd.get_dummies(X, columns=[c for c in X.columns if X[c].dtype == object], dummy_na=False)
+        X = pd.get_dummies(X, columns=[c for c in X.columns if _es_categorica(X[c])], dummy_na=False)
         self._columns = X.columns.tolist()
         self._model = XGBRegressor(**self.params)
         self._model.fit(X, y)
@@ -143,7 +153,7 @@ class XGBoostModel:
 
     def predict(self, df: pd.DataFrame) -> np.ndarray:
         X = df[self.feature_cols_].copy()
-        X = pd.get_dummies(X, columns=[c for c in X.columns if X[c].dtype == object], dummy_na=False)
+        X = pd.get_dummies(X, columns=[c for c in X.columns if _es_categorica(X[c])], dummy_na=False)
         X = X.reindex(columns=self._columns, fill_value=0)
         return np.asarray(self._model.predict(X), dtype=float)
 
@@ -161,7 +171,7 @@ class CatBoostModel:
         from catboost import CatBoostRegressor
 
         X, y = _split_xy(df, target_col, feature_cols)
-        cat_features = [i for i, c in enumerate(X.columns) if X[c].dtype == object]
+        cat_features = [i for i, c in enumerate(X.columns) if _es_categorica(X[c])]
         self._model = CatBoostRegressor(**self.params)
         self._model.fit(X, y, cat_features=cat_features, verbose=False)
         self.feature_cols_ = feature_cols

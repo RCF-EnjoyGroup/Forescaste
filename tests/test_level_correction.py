@@ -27,7 +27,7 @@ def _detalle_con_drift(prop: str = "TEST", sesgo: float = 0.20,
     actual = 100.0
     filas = []
     for d in fechas:
-        act = actual + (d.dayofweek % 3)  # variación mínima realista
+        act = actual + (d.day_of_week % 3)  # variación mínima realista
         filas.append({
             "property": prop, "stay_date": d, "forecast_date": d - pd.Timedelta(days=30),
             "published_forecast_rn": act * (1 - sesgo), "actual_rn": act,

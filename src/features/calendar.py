@@ -44,7 +44,7 @@ def add_calendar_features(
     out = df.copy()
     dates = parse_dates_flexible(out[date_col])
 
-    out["day_of_week"] = dates.dt.dayofweek           # 0=lun .. 6=dom
+    out["day_of_week"] = dates.dt.day_of_week           # 0=lun .. 6=dom
     out["is_weekend"] = out["day_of_week"] >= 5
     out["week_of_year"] = dates.dt.isocalendar().week.astype("int64")
     out["month"] = dates.dt.month

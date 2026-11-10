@@ -26,7 +26,7 @@ def _fold_predictions(prop="corin", n_dias=90, n_folds=2, seed=3):
         dates = pd.date_range(base + pd.Timedelta(days=1), periods=n_dias)
         for d in dates:
             lead = (d - base).days
-            actual = 100 + 10 * np.sin(2 * np.pi * d.dayofweek / 7) + rng.normal(0, 3)
+            actual = 100 + 10 * np.sin(2 * np.pi * d.day_of_week / 7) + rng.normal(0, 3)
             rows.append({"property": prop, "fold": fold, "model": "lightgbm",
                          "stay_date": d, "lead_days": lead,
                          "forecast": actual + rng.normal(0, 10), "actual": actual})

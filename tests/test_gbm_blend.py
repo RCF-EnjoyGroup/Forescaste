@@ -51,7 +51,7 @@ def test_blend_auto_diagnostico_detecta_colapso():
     n = 400
     dates = pd.date_range("2025-06-01", periods=n)
     rng = np.random.default_rng(42)
-    rn = np.where(dates.dayofweek == 3, 20.0, 60.0) + rng.normal(0, 5, n)
+    rn = np.where(dates.day_of_week == 3, 20.0, 60.0) + rng.normal(0, 5, n)
     dem = pd.DataFrame({
         "property": ["corin"] * n,
         "stay_date": dates,

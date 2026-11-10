@@ -105,7 +105,7 @@ def test_lags_calendario_con_huecos():
     fecha (hallazgo LAPAS/LIRAK del diagnóstico).
     """
     dates = pd.date_range("2026-01-01", periods=30, freq="D")
-    keep = [d for d in dates if d.dayofweek != 0]  # sin lunes => huecos
+    keep = [d for d in dates if d.day_of_week != 0]  # sin lunes => huecos
     df = pd.DataFrame(
         {
             "property": ["corin"] * len(keep),

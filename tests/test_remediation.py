@@ -38,7 +38,7 @@ from src.features.asof import LeakageError as AsOfLeakageError
 def _demand_2props(n=400, start="2025-01-01", seed=11):
     rng = np.random.default_rng(seed)
     dates = pd.date_range(start, periods=n, freq="D")
-    dow = dates.dayofweek
+    dow = dates.day_of_week
     base = 55 + 12 * (dow >= 5)
     seasonal = 10 * np.sin(2 * np.pi * np.arange(n) / 365.25)
     vals = np.clip(base + seasonal + rng.normal(0, 5, n), 0, 100).round()
@@ -140,7 +140,7 @@ def test_ml_rollout_usa_features_del_dia_a_predecir():
     """
     n = 420
     dates = pd.date_range("2025-01-01", periods=n)
-    weekend = np.asarray(dates.dayofweek >= 5, dtype=float)
+    weekend = np.asarray(dates.day_of_week >= 5, dtype=float)
     dem = pd.DataFrame(
         {
             "property": ["corin"] * n,
@@ -169,7 +169,7 @@ def test_ml_rollout_usa_features_del_dia_a_predecir():
     assert not fitted.cold_start(), "con 420 estancias en el panel no hay cold start"
     pred = predict_candidate(fitted, pick, future).set_index("stay_date")["raw_forecast_rn"]
 
-    future_weekend = np.asarray(future.dayofweek >= 5)
+    future_weekend = np.asarray(future.day_of_week >= 5)
     assert future_weekend.any() and not future_weekend.all()
     # sábado/lunes del horizonte: features del MISMO día → alto
     assert pred.loc[[d for d, w in zip(future, future_weekend) if w]].min() > 75, (

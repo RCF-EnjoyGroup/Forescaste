@@ -77,14 +77,14 @@ def _apply_aliases(
         return df
     out = df.copy()
     col = schema.property_col
-    out[col] = out[col].astype(str).replace(aliases)
+    out[col] = out[col].fillna("__sin_propiedad__").astype(str).replace(aliases)
     return out
 
 
 def _normalize_demand(df: pd.DataFrame, schema: SourceSchema) -> pd.DataFrame:
     out = pd.DataFrame(
         {
-            "property": df[schema.property_col].astype(str),
+            "property": df[schema.property_col].fillna("__sin_propiedad__").astype(str),
             "stay_date": parse_dates_flexible(df[schema.date_col]),
             "room_nights": pd.to_numeric(df[schema.col("demand")], errors="coerce"),
         }
@@ -101,7 +101,7 @@ def _normalize_capacity(df: pd.DataFrame, schema: SourceSchema) -> pd.DataFrame:
     """
     out = pd.DataFrame(
         {
-            "property": df[schema.property_col].astype(str),
+            "property": df[schema.property_col].fillna("__sin_propiedad__").astype(str),
             "stay_date": parse_dates_flexible(df[schema.date_col]),
             "capacity": pd.to_numeric(df[schema.col("capacity")], errors="coerce"),
         }
@@ -110,7 +110,7 @@ def _normalize_capacity(df: pd.DataFrame, schema: SourceSchema) -> pd.DataFrame:
 
 
 def _normalize_pickup(df: pd.DataFrame, schema: SourceSchema) -> pd.DataFrame:
-    prop = df[schema.property_col].astype(str)
+    prop = df[schema.property_col].fillna("__sin_propiedad__").astype(str)
     stay = parse_dates_flexible(df[schema.date_col])
     lead_col = schema.roles.get("lead")
     has_lead_col = bool(lead_col) and lead_col != "__derived__" and lead_col in df.columns
@@ -258,8 +258,8 @@ def _ml_row(
         "rolling_mean_14": roll(14, "mean"),
         "rolling_mean_28": roll(28, "mean"),
         "rolling_std_28": roll(28, "std"),
-        "day_of_week": float(d.dayofweek),
-        "is_weekend": float(d.dayofweek >= 5),
+        "day_of_week": float(d.day_of_week),
+        "is_weekend": float(d.day_of_week >= 5),
         "month": float(d.month),
         "quarter": float((d.month - 1) // 3 + 1),
         "current_booked_rn": float(booked),
@@ -580,7 +580,7 @@ def _dow_profile(
     ].dropna(subset=["room_nights"])
     if len(hist) < min_obs_per_dow * 7:
         return None
-    g = hist.groupby(hist["stay_date"].dt.dayofweek)["room_nights"]
+    g = hist.groupby(hist["stay_date"].dt.day_of_week)["room_nights"]
     counts = g.size()
     # los 7 dias presentes y con suficientes obs: un dow ausente no
     # aparece en counts y el map posterior daria NaN
@@ -651,7 +651,7 @@ def _operative_forecast_frame(
                     if profile is None:
                         continue
                     dows = pd.Series(
-                        pd.DatetimeIndex(dates_fc).dayofweek, index=dates_fc
+                        pd.DatetimeIndex(dates_fc).day_of_week, index=dates_fc
                     )
                     operative.loc[dates_fc, "forecast"] = (
                         operative.loc[dates_fc, "forecast"] * dows.map(profile)
@@ -1397,7 +1397,7 @@ def build_forecasts(
                     if profile is not None:
                         long_idx = pred.index[pred["lead_days"] > BLEND_LEAD_SPLIT]
                         dows = pd.Series(
-                            pd.DatetimeIndex(pred.loc[long_idx, "stay_date"]).dayofweek,
+                            pd.DatetimeIndex(pred.loc[long_idx, "stay_date"]).day_of_week,
                             index=long_idx,
                         )
                         pred.loc[long_idx, "raw_forecast_rn"] = (
