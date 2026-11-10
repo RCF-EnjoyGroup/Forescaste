@@ -23,6 +23,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
 from src.features.asof import rolling_backward
 
 LAGS = (1, 7, 14, 28, 365)
@@ -48,7 +49,7 @@ def add_demand_features(
         nunca se reporta como faltante global de la corrida.
     """
     out = df.copy()
-    out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
+    out[date_col] = parse_dates_flexible(out[date_col])
     out = out.loc[out[date_col].notna()]
     sort_cols = [group_col, date_col] if group_col else [date_col]
     out = out.sort_values(sort_cols)
@@ -65,7 +66,9 @@ def add_demand_features(
             return g, {}
         vals = pd.to_numeric(g[value_col], errors="coerce")
         # deduplicar fechas defensivamente (la calidad ya veta duplicados)
-        daily = pd.Series(vals.to_numpy(dtype=float), index=dates).groupby(level=0).mean()
+        daily = (
+            pd.Series(vals.to_numpy(dtype=float), index=dates).groupby(level=0).mean()
+        )
         daily = daily.sort_index()
         grid = pd.date_range(daily.index.min(), daily.index.max(), freq="D")
         daily = daily.reindex(grid)
@@ -104,7 +107,7 @@ def add_demand_features(
         # mapear por VALOR de fecha (no por merge): preserva el índice original
         # de las filas — la suite de leakage alinea por índice y un merge lo
         # resetearía silenciosamente
-        dates = pd.DatetimeIndex(pd.to_datetime(g[date_col], errors="coerce"))
+        dates = pd.DatetimeIndex(parse_dates_flexible(g[date_col]))
         for name, s in feats.items():
             g[name] = s.reindex(dates).to_numpy(dtype=float)
         return g

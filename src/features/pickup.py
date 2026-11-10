@@ -26,6 +26,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
+
 RECENT_WINDOWS = (1, 3, 7, 14, 30)
 ACCEL_WINDOW_DAYS = 7  # aceleración: últimos 7 días vs 7 días previos
 VOLATILITY_WINDOW_DAYS = 7
@@ -50,8 +52,8 @@ def add_pickup_features(
         calcular cualquier feature (contrato as-of).
     """
     out = df.copy()
-    out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
-    out[snapshot_col] = pd.to_datetime(out[snapshot_col], errors="coerce")
+    out[date_col] = parse_dates_flexible(out[date_col])
+    out[snapshot_col] = parse_dates_flexible(out[snapshot_col])
     if cutoff is not None:
         out = out.loc[out[snapshot_col] <= pd.Timestamp(cutoff)].copy()
     # la grilla diaria necesita fechas de snapshot legibles; NaT no puede

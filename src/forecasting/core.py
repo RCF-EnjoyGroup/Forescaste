@@ -1142,7 +1142,7 @@ def level_correction_factors(
         return factors, report
 
     work = detail.copy()
-    work["stay_date"] = pd.to_datetime(work["stay_date"], errors="coerce")
+    work["stay_date"] = parse_dates_flexible(work["stay_date"])
     work = work.dropna(subset=["stay_date"])
     if work.empty:
         report["note"] = "sin fechas de estancia"

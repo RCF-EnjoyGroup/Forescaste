@@ -11,6 +11,8 @@ from typing import Iterable
 
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
+
 # Temporadas del hemisferio norte / Costa Rica (mes -> temporada)
 _SEASON_BY_MONTH = {
     12: "high", 1: "high", 2: "high",          # alta
@@ -40,7 +42,7 @@ def add_calendar_features(
     **no** se crea — se documenta la ausencia en ``has_holiday_feature``.
     """
     out = df.copy()
-    dates = pd.to_datetime(out[date_col], errors="coerce")
+    dates = parse_dates_flexible(out[date_col])
 
     out["day_of_week"] = dates.dt.dayofweek           # 0=lun .. 6=dom
     out["is_weekend"] = out["day_of_week"] >= 5

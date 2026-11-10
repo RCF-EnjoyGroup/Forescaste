@@ -13,6 +13,8 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
+
 from src.evaluation.metrics import compute_metrics
 
 # spec reporting §26 — columnas obligatorias
@@ -56,7 +58,7 @@ def build_forecast_table(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
     if "stay_date" in out.columns:
-        out["stay_date"] = pd.to_datetime(out["stay_date"], errors="coerce")
+        out["stay_date"] = parse_dates_flexible(out["stay_date"])
 
     missing = [c for c in REQUIRED_COLUMNS if c not in out.columns]
     for col in missing:
@@ -153,7 +155,7 @@ def build_powerbi_dataset(
     """9.3 — Cuatro tablas planas, una por área del dashboard."""
     fc = forecast.copy()
     if "stay_date" in fc.columns:
-        fc["stay_date"] = pd.to_datetime(fc["stay_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        fc["stay_date"] = parse_dates_flexible(fc["stay_date"]).dt.strftime("%Y-%m-%d")
 
     # Variance / Variance % cuando existan reales
     if "actual_rn" in fc.columns:
@@ -199,7 +201,7 @@ def _area_frame(df: pd.DataFrame | None, columns: list[str]) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
     out = df.copy()
     if "stay_date" in out.columns:
-        out["stay_date"] = pd.to_datetime(out["stay_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        out["stay_date"] = parse_dates_flexible(out["stay_date"]).dt.strftime("%Y-%m-%d")
     for c in columns:
         if c not in out.columns:
             out[c] = np.nan
@@ -285,6 +287,6 @@ def _align_actual(forecast: pd.DataFrame, actual: pd.DataFrame) -> pd.DataFrame:
         a["_actual"] = pd.to_numeric(a["actual_rn"], errors="coerce")
     else:
         raise KeyError("actual debe tener 'room_nights' o 'actual_rn'")
-    f["stay_date"] = pd.to_datetime(f["stay_date"], errors="coerce")
-    a["stay_date"] = pd.to_datetime(a["stay_date"], errors="coerce")
+    f["stay_date"] = parse_dates_flexible(f["stay_date"])
+    a["stay_date"] = parse_dates_flexible(a["stay_date"])
     return f.merge(a[keys + ["_actual"]], on=keys, how="inner").dropna(subset=["_actual", "_forecast"])

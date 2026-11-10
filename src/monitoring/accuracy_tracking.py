@@ -17,6 +17,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
+
 from src.evaluation.breakdowns import interval_coverage, lead_band
 from src.evaluation.metrics import compute_metrics
 
@@ -53,7 +55,7 @@ def _materialized(
         return None
 
     work = published.copy()
-    work["stay_date"] = pd.to_datetime(work["stay_date"], errors="coerce")
+    work["stay_date"] = parse_dates_flexible(work["stay_date"])
     work = work.loc[
         (work["stay_date"] <= pd.Timestamp(through)) & work["stay_date"].notna()
     ]
@@ -61,14 +63,14 @@ def _materialized(
         return None
 
     act = actuals[["property", "stay_date", "room_nights"]].copy()
-    act["stay_date"] = pd.to_datetime(act["stay_date"], errors="coerce")
+    act["stay_date"] = parse_dates_flexible(act["stay_date"])
     act = act.dropna(subset=["stay_date"]).rename(columns={"room_nights": "actual"})
     merged = work.merge(act, on=["property", "stay_date"], how="inner")
     # solo estancias POSTERIORES al corte de ese forecast: lo anterior a su
     # corte ya era historia cuando se publicó
     if "forecast_date" in merged.columns:
         merged = merged.loc[
-            pd.to_datetime(merged["forecast_date"], errors="coerce")
+            parse_dates_flexible(merged["forecast_date"])
             < merged["stay_date"]
         ]
     if merged.empty:
@@ -152,7 +154,7 @@ def load_published_forecast(run_dir: str | Path) -> pd.DataFrame | None:
         return None
     if df.empty or "stay_date" not in df.columns or "property" not in df.columns:
         return None
-    df["stay_date"] = pd.to_datetime(df["stay_date"], errors="coerce")
+    df["stay_date"] = parse_dates_flexible(df["stay_date"])
     return df
 
 
@@ -369,7 +371,7 @@ def forecast_revision(
 
     def _keys(df: pd.DataFrame) -> pd.DataFrame:
         out = df[["property", "stay_date", value_col]].copy()
-        out["stay_date"] = pd.to_datetime(out["stay_date"], errors="coerce")
+        out["stay_date"] = parse_dates_flexible(out["stay_date"])
         out[value_col] = pd.to_numeric(out[value_col], errors="coerce")
         return (
             out.dropna(subset=["stay_date", value_col])

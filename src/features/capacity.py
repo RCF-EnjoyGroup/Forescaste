@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
 from src.features.asof import lag, rolling_backward
 
 
@@ -21,7 +22,7 @@ def add_capacity_features(
     group_col: str | None = "property",
 ) -> pd.DataFrame:
     out = df.copy()
-    out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
+    out[date_col] = parse_dates_flexible(out[date_col])
     sort = [group_col, date_col] if group_col else [date_col]
     out = out.sort_values(sort)
 

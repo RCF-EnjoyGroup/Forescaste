@@ -31,6 +31,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.data.dates import parse_dates_flexible
+
 from src.backtesting.snapshots import clear_cache, run_backtest
 from src.config import EngineConfig, load_config
 from src.data.schema import SourceKind, SourceSchema, detect_schema
@@ -1012,7 +1014,7 @@ def run_end_to_end(
         eval_src = eval_frame.copy()
     elif actual is not None and not actual.empty:
         a = actual.copy()
-        a["stay_date"] = pd.to_datetime(a["stay_date"], errors="coerce")
+        a["stay_date"] = parse_dates_flexible(a["stay_date"])
         if "property" not in a.columns:
             a["property"] = props[0] if props else "PORTFOLIO"
         a["property"] = a["property"].astype(str).replace(config.property_aliases)
@@ -1025,7 +1027,7 @@ def run_end_to_end(
             eval_src = merged
 
     if eval_src is not None:
-        eval_src["stay_date"] = pd.to_datetime(eval_src["stay_date"], errors="coerce")
+        eval_src["stay_date"] = parse_dates_flexible(eval_src["stay_date"])
         eval_src["lead_days"] = (
             pd.to_numeric(eval_src["lead_days"], errors="coerce").fillna(30).astype(int)
         )
@@ -1465,7 +1467,11 @@ def run_end_to_end(
     # ---------- 14. reporte visual HTML (vista; NO cuenta entre los 10 entregables)
     try:
         actual_series: pd.Series | None = None
+        actual_note: str | None = None
         if eval_src is not None and "actual" in eval_src.columns:
+            n_reales_eval = int(
+                pd.to_numeric(eval_src["actual"], errors="coerce").notna().sum()
+            )
             merged_actual = eval_src[["property", "stay_date", "actual"]].drop_duplicates(
                 subset=["property", "stay_date"]
             )
@@ -1474,6 +1480,15 @@ def run_end_to_end(
             )
             if joined["actual"].notna().any():
                 actual_series = joined["actual"]
+            elif n_reales_eval:
+                # reales EXISTEN pero la unión no encontro coincidencias:
+                # la comparativa declara el motivo — nunca un hueco
+                # silencioso (openspec 2026-11-09-report-legibility)
+                actual_note = (
+                    "comparativa real-vs-forecast no disponible: la union de "
+                    "reales con el horizonte publicado no encontro coincidencias "
+                    "(revisar alineacion de claves property/stay_date)"
+                )
         # corrida futura: la banda vive sobre el horizonte (sin reales) — la
         # fila de cobertura del panel se presenta como N/D con el motivo,
         # nunca se omite silenciosamente (spec reporting: auto-explicado)
@@ -1494,6 +1509,7 @@ def run_end_to_end(
             metrics=metrics,
             kpis=kpis,
             actual=actual_series,
+            actual_note=actual_note,
             property_breakdown=breakdowns.get("property"),
             property_weekly_breakdown=breakdowns.get("property_weekly"),
             model_by_property=model_by_property,
