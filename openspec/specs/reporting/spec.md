@@ -49,6 +49,16 @@ El sistema SHALL producir como mínimo: Forecast Room Nights, Forecast Occupancy
 - **WHEN** un KPI no tiene datos suficientes para calcularse (por ejemplo, no existe una corrida previa comparable)
 - **THEN** se serializa como `null` con el motivo documentado, nunca como `NaN`
 
+#### Scenario: Métricas en escala legible
+- **WHEN** el reporte visual muestra WMAPE, sesgo, MAPE, n_obs o KPIs de accuracy
+- **THEN** WMAPE y sesgo se muestran como porcentaje (se guardan como fracción), MAPE como porcentaje, n_obs y exclusiones como conteos enteros, y los valores inexistentes (NaN) como "—" coherente con el N/D del panel
+- **THEN** una nota de auditoría explica la escala de cada métrica
+
+#### Scenario: Comparativa real-vs-forecast nunca silenciosa
+- **WHEN** la corrida es de verificación y su ventana evaluada tiene reales, pero la unión con el horizonte publicado no produce coincidencias
+- **THEN** las tarjetas "Forecast vs Real" y "Dispersión" se renderizan con el MOTIVO explícito de la indisponibilidad (p. ej. "la unión de reales con el horizonte publicado no encontró coincidencias — revisar alineación de claves")
+- **THEN** solo cuando genuinamente no hay reales (corrida futura: el horizonte aún no existe) las tarjetas se omiten, que es el comportamiento documentado
+
 
 ### Requirement: Reportes del proyecto
 El sistema SHALL producir los entregables: Data Quality Report, EDA Report, Feature Engineering Report, Model Benchmark (Seasonal Naive, Pickup Curve, ETS, SARIMAX, LightGBM, XGBoost, CatBoost), Backtesting Report, Forecast Accuracy Report, Future Forecast Dataset, Model Explainability Report, dataset para Power BI y documentación técnica; cada entregable SHALL derivarse de los cálculos reales de la corrida.

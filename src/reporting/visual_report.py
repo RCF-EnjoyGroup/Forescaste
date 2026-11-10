@@ -1067,10 +1067,13 @@ def _table_accuracy_by_property(
         prop_display = prop + ' <span class="flag">⚠ provisional</span>' if prop in cold else prop
         def _f(key: str, fmt: str) -> str:
             try:
-                return format(float(r[key]), fmt)
+                val = float(r[key])
             except (KeyError, TypeError, ValueError):
                 return "—"
-        mape_cell = _f("mape", ".1f")
+            # NaN (corrida sin reales): '—' en vez de 'nan%' (camino latente)
+            return format(val, fmt) if math.isfinite(val) else "—"
+        mape_txt = _f("mape", ".1f")
+        mape_cell = f"{mape_txt}%" if mape_txt != "—" else "—"
         try:
             p10 = float(r["p10_actual"])
         except (KeyError, TypeError, ValueError):
@@ -1080,7 +1083,7 @@ def _table_accuracy_by_property(
             mape_cell += "†"
             weekly_note = True
         w_sem = weekly.get(prop)
-        w_sem_cell = format(w_sem, ".3f") if w_sem is not None else "—"
+        w_sem_cell = format(w_sem, ".1%") if w_sem is not None else "—"
         if w_sem is not None:
             weekly_note = True
         cov_cell = "—"
@@ -1094,10 +1097,10 @@ def _table_accuracy_by_property(
             cov_cell = f'<span class="{sev}">{cov:.0%}</span>'
         rows.append(
             f"<tr><td>{prop_display}</td><td>{model}</td>"
-            f"<td>{_f('wmape', '.3f')}</td><td>{w_sem_cell}</td>"
+            f"<td>{_f('wmape', '.1%')}</td><td>{w_sem_cell}</td>"
             f"<td>{mape_cell}</td>"
-            f"<td>{_f('bias', '+.3f')}</td><td>{cov_cell}</td>"
-            f"<td>{_f('n_obs', ',')}</td></tr>"
+            f"<td>{_f('bias', '+.1%')}</td><td>{cov_cell}</td>"
+            f"<td>{_f('n_obs', ',.0f')}</td></tr>"
         )
     nota = ""
     if weekly_note:
@@ -1187,12 +1190,16 @@ def _table_backtest_lead_band(backtest_report: dict | None) -> str:
     for _, r in df.iterrows():
         def _f(key: str, fmt: str) -> str:
             try:
-                return format(float(r[key]), fmt)
+                val = float(r[key])
             except (KeyError, TypeError, ValueError):
                 return "—"
+            # NaN (corrida sin reales): '—' en vez de 'nan%' (camino latente)
+            return format(val, fmt) if math.isfinite(val) else "—"
+        mape_txt = _f("mape", ".1f")
+        mape_cell = f"{mape_txt}%" if mape_txt != "—" else "—"
         cells.append(
-            f"<tr><td>{r.get('lead_band', '—')}</td><td>{_f('n_obs', ',')}</td>"
-            f"<td>{_f('wmape', '.3f')}</td><td>{_f('mape', '.1f')}</td></tr>"
+            f"<tr><td>{r.get('lead_band', '—')}</td><td>{_f('n_obs', ',.0f')}</td>"
+            f"<td>{_f('wmape', '.1%')}</td><td>{mape_cell}</td></tr>"
         )
     return (
         '<table class="tbl"><thead><tr><th>Banda</th><th>n obs</th>'
@@ -1243,7 +1250,10 @@ def _kpi_grid(kpis: dict | None, champion: str | None = None) -> str:
         val = kpis[key]
         try:
             val = float(val)
-            if key == "n_properties_evaluated":
+            if not math.isfinite(val):
+                # sin reales la métrica es NaN: '—' coherente con el N/D
+                shown = "—"
+            elif key == "n_properties_evaluated":
                 total = float(kpis.get("n_properties_portfolio", 0) or 0)
                 shown = f"{val:.0f} / {total:.0f}"
             elif "occupancy" in key or "utilization" in key:
@@ -1251,9 +1261,11 @@ def _kpi_grid(kpis: dict | None, champion: str | None = None) -> str:
             elif key == "forecast_accuracy_mape":
                 shown = f"{val:.1f}%"
             elif key == "forecast_accuracy_wmape":
-                shown = f"{val:.3f}"
+                shown = f"{val:.1%}"
             elif key == "forecast_bias":
                 shown = f"{val:+.1%}"
+            elif key == "forecast_room_nights":
+                shown = f"{val:,.0f}"  # conteo de noches, sin decimales
             else:
                 shown = f"{val:,.1f}"
         except (TypeError, ValueError):
@@ -1284,11 +1296,31 @@ def _fmt_metrics(metrics: dict | None) -> str:
     rows = []
     for k, v in metrics.items():
         try:
-            rows.append(f"<tr><td>{k}</td><td>{float(v):,.4f}</td></tr>")
+            val = float(v)
         except (TypeError, ValueError):
             rows.append(f"<tr><td>{k}</td><td>{v}</td></tr>")
+            continue
+        # escalas por clave: wmape/bias se guardan como fracción (0.103),
+        # mape en ×100 (33.25); n_obs y exclusiones son conteos enteros
+        if k in ("wmape", "bias"):
+            shown = f"{val:.2%}"
+        elif k == "mape":
+            shown = f"{val:.1f}%"
+        elif k in ("n_obs", "n_mape_excluded"):
+            shown = f"{val:,.0f}"
+        elif k in ("mae", "rmse"):
+            shown = f"{val:,.1f}"
+        else:
+            shown = f"{val:,.4f}"
+        rows.append(f"<tr><td>{k}</td><td>{shown}</td></tr>")
+    nota = (
+        '<p style="font-size:0.78em;color:#64748b;margin:4px 0 0 0">'
+        "Valores de auditoría de la corrida: WMAPE y bias en porcentaje "
+        "(se guardan como fracción), MAPE en porcentaje, n obs como conteo."
+        "</p>"
+    )
     return ('<table class="tbl"><thead><tr><th>Métrica</th><th>Valor</th></tr></thead>'
-            "<tbody>" + "".join(rows) + "</tbody></table>")
+            "<tbody>" + "".join(rows) + "</tbody></table>" + nota)
 
 
 def generate_visual_report(
@@ -1300,6 +1332,7 @@ def generate_visual_report(
     metrics: dict | None = None,
     kpis: dict | None = None,
     actual: pd.Series | None = None,
+    actual_note: str | None = None,
     property_breakdown: pd.DataFrame | None = None,
     property_weekly_breakdown: pd.DataFrame | None = None,
     model_by_property: dict | None = None,
@@ -1372,6 +1405,27 @@ def generate_visual_report(
             f"{img_html}{extra}{_explainer(name)}</section>"
         )
 
+    def _actual_card(name: str, img: str | None, note: str | None,
+                     *, wide: bool = False) -> str:
+        """Tarjeta dependiente de reales — nada silencioso.
+
+        Con imagen → la tarjeta normal. Sin imagen pero con nota →
+        la tarjeta DECLARA el motivo (reales existen pero la comparativa
+        no pudo dibujarse: el lector ve que falló algo, no un hueco).
+        Sin nota → se omite, que es el comportamiento documentado
+        cuando genuinamente no hay reales (corrida futura).
+        """
+        if img:
+            return _card(name, img, wide=wide)
+        if note:
+            cls = "card wide" if wide else "card"
+            return (
+                f'<section class="{cls}"><h2>{name}</h2>'
+                f'<p style="font-size:0.78em;color:#64748b;'
+                f'margin:4px 0 0 0">{note}</p></section>'
+            )
+        return ""
+
     # ---- resumen ejecutivo: el tablero de veredictos va primero
     resumen = _validation_panel(
         metrics=metrics,
@@ -1418,8 +1472,11 @@ def generate_visual_report(
             wide=True,
             placeholder=False,
         ),
-        _card("Dispersión", _scatter_forecast_vs_actual(forecast, actual_series),
-              placeholder=False),
+        _actual_card(
+            "Dispersión",
+            _scatter_forecast_vs_actual(forecast, actual_series),
+            actual_note,
+        ),
         *(
             [_card(
                 "Expediente del forecast publicado",
@@ -1434,11 +1491,11 @@ def generate_visual_report(
     # ---- pronóstico: lo que se publica y de qué está hecho
     forecast_cards = [
         _card("Forecast", _chart_forecast(forecast), wide=True),
-        _card(
+        _actual_card(
             "Forecast vs Real",
             _chart_forecast_vs_actual(forecast, actual_series),
+            actual_note,
             wide=True,
-            placeholder=False,
         ),
         _card("Forecast por propiedad",
               _chart_forecast_by_property(forecast, actual_series, model_by_property),

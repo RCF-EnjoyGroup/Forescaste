@@ -400,7 +400,11 @@ def test_estandar_ingenieria_logica_en_src():
 
 # ------------------------ reporte visual HTML ---------------------------
 
-from src.reporting.visual_report import generate_visual_report  # noqa: E402
+from src.reporting.visual_report import (  # noqa: E402
+    _fmt_metrics,
+    _kpi_grid,
+    generate_visual_report,
+)
 
 
 def test_reporte_visual_genera_html_autocontenido(tmp_path):
@@ -968,9 +972,9 @@ def test_reporte_visual_accuracy_con_grano_semanal_y_advertencia(tmp_path):
     )
     html = out.read_text(encoding="utf-8")
     assert "WMAPE sem" in html, "la columna semanal debe aparecer"
-    assert "0.215" in html, "el WMAPE semanal de SJOSL debe verse"
-    assert "51.0†" in html, "el MAPE de la propiedad con P10<10 lleva la marca"
-    assert "12.0†" not in html, "la propiedad grande no lleva marca"
+    assert "21.5%" in html, "el WMAPE semanal de SJOSL debe verse como %"
+    assert "51.0%†" in html, "el MAPE de la propiedad con P10<10 lleva la marca"
+    assert "12.0%†" not in html, "la propiedad grande no lleva marca"
     assert "P10 < 10 RN" in html or "P10 < 10 RN" in html, "la nota explica la marca"
     # sin weekly: la columna existe pero la celda queda con —; la marca de MAPE no depende del weekly
     html_solo = generate_visual_report(
@@ -978,7 +982,7 @@ def test_reporte_visual_accuracy_con_grano_semanal_y_advertencia(tmp_path):
         model_by_property={"SJOSL": "pickup_curve"},
     ).read_text(encoding="utf-8")
     assert "WMAPE sem" in html_solo, "la columna existe aunque falte el desglose"
-    assert "51.0†" in html_solo, "la advertencia de MAPE no depende del weekly"
+    assert "51.0%†" in html_solo, "la advertencia de MAPE no depende del weekly"
 
 
 def test_sampled_backtest_emite_desglose_por_propiedad_y_banda():
@@ -1006,3 +1010,78 @@ def test_sampled_backtest_emite_desglose_por_propiedad_y_banda():
     assert ("corin", "1-2") in keys and ("fiesta", "90+") in keys
     for r in rows:
         assert {"property", "lead_band", "n_obs", "wmape", "mape"} <= set(r)
+
+
+def test_fmt_metrics_escala_por_clave():
+    """La tabla Métricas habla en %/enteros, no en fracciones crudas."""
+    html = _fmt_metrics(
+        {
+            "wmape": 0.10326555206680513,
+            "bias": -0.008777993692542806,
+            "mape": 33.25386967086486,
+            "mae": 9.315785817943038,
+            "rmse": 14.771455044223519,
+            "n_obs": 335,
+            "n_mape_excluded": 0,
+        }
+    )
+    assert "10.33%" in html, "WMAPE (fracción) debe verse como porcentaje"
+    assert "0.1033" not in html, "la fracción cruda no debe colarse en el informe"
+    assert "33.3%" in html, "el MAPE ya viene en ×100 y se muestra con %"
+    assert "<td>335</td>" in html, "n_obs es conteo: sin .0000"
+    assert "335.0000" not in html
+    assert "<td>0</td>" in html, "n_mape_excluded también es conteo"
+    assert "9.3" in html and "14.8" in html, "mae/rmse mantienen 1 decimal"
+    assert "auditoría" in html, "la nota aclara el origen de los valores"
+
+
+def test_kpi_grid_nan_se_ve_como_raya():
+    """Corrida sin reales: forecast_accuracy_wmape NaN → '—', no 'nan%'."""
+    html = _kpi_grid(
+        {
+            "forecast_accuracy_wmape": float("nan"),
+            "forecast_bias": float("nan"),
+            "forecast_accuracy_mape": float("nan"),
+        }
+    )
+    assert "nan%" not in html, "el NaN no debe renderizarse como 'nan%'"
+    assert ">—</span>" in html, "el no-disponible se muestra con la raya"
+# ---- blindaje anti-silencio: tarjetas dependientes de reales ----
+
+def test_tarjeta_vs_real_declara_motivo_cuando_no_alinea(tmp_path):
+    """Reales existen pero la union falla: la tarjeta DECLARA el motivo."""
+    fc = pd.DataFrame({
+        "property": ["A"] * 3,
+        "stay_date": pd.to_datetime(["2026-09-10", "2026-09-11", "2026-09-12"]),
+        "lead_days": [5, 10, 15],
+        "final_forecast_rn": [10.0, 11.0, 12.0],
+    })
+    html = generate_visual_report(
+        tmp_path / "r1",
+        fc,
+        actual=None,
+        actual_note=("comparativa real-vs-forecast no disponible: la union de "
+                     "reales con el horizonte publicado no encontro coincidencias "
+                     "(revisar alineacion de claves property/stay_date)"),
+    ).read_text(encoding="utf-8")
+    assert "Forecast vs Real" in html, "la tarjeta existe aunque no haya grafico"
+    assert "no encontro coincidencias" in html, "el motivo es visible para el lector"
+    assert "Dispersi" in html
+
+
+def test_tarjeta_vs_real_se_omite_sin_reales_ni_motivo(tmp_path):
+    """Corrida futura (sin reales): omision documentada, sin tarjeta fantasma."""
+    fc = pd.DataFrame({
+        "property": ["A"] * 3,
+        "stay_date": pd.to_datetime(["2026-12-10", "2026-12-11", "2026-12-12"]),
+        "lead_days": [5, 10, 15],
+        "final_forecast_rn": [10.0, 11.0, 12.0],
+    })
+    html = generate_visual_report(
+        tmp_path / "r2",
+        fc,
+        actual=None,
+        actual_note=None,
+    ).read_text(encoding="utf-8")
+    assert "Forecast vs Real" not in html, "sin reales se omite (comportamiento documentado)"
+    assert "no encontro coincidencias" not in html
