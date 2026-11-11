@@ -77,6 +77,12 @@ El sistema SHALL persistir un registro append-only entre corridas con: métricas
 - **THEN** los consumidores de la línea operativa (`previous_operational`, `select_gradable_publication` — que ya filtraban `mode="futuro"`) quedan como referencia del patrón, sin cambio de comportamiento
 - **THEN** la regla quedó validada con el replay del registro real (2026-11-10): 24 de 36 corridas cargaban memoria de la otra línea; el caso que motivó el cambio (`real-20261105-1442`, brazo B del A/B de bias) heredaba `sarimax` de una corrida futura y con la regla hereda la última real (`lightgbm`), dejando los brazos del A/B comparables en modelo
 
+#### Scenario: Memoria por línea de corrida (modo) — acceso robusto
+- **WHEN** cualquier consumidor lee la ruta del registro (`monitoring.registry_path`)
+- **THEN** la lee como mapa (`(cfg.monitoring or {}).get("registry_path")`) — jamás por atributo, que revienta con `AttributeError` contra el `dict` de `src/config.py`
+- **THEN** la selección as-of del modo futuro (`run_real --futuro`) encadena al último registro **futuro** con el mismo helper que el runner — un solo camino de lectura del registro para toda la memoria entre corridas
+- **THEN** la regla quedó fijada tras el crash del 2026-11-10 (`--futuro` caía con `AttributeError: 'dict' object has no attribute 'registry_path'` desde el commit que añadió la histéresis del modo futuro); el helper `_incumbente_previo` concentra la lectura y los tests de regresión la clavan
+
 ### Requirement: Detección de outliers sin eliminación automática
 El sistema SHALL detectar eventos, picos anormales, caídas abruptas, cierres, cambios de inventario, datos faltantes y cambios estructurales, clasificándolos sin eliminarlos automáticamente.
 

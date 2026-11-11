@@ -46,6 +46,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -90,6 +91,23 @@ ML_MIN_TRAIN_OBS = 60
 # --------------------------------------------------------------------------
 # carga de las tres fuentes reales (crudas; el runner aplica alias/esquema)
 # --------------------------------------------------------------------------
+
+def _incumbente_previo(cfg: Any, mode: str = "futuro") -> dict[str, Any] | None:
+    """Estado previo del registro para la memoria entre corridas.
+
+    Helper único de lectura (openspec 2026-11-10-registry-mode-memory y
+    2026-11-10-fix-futuro-registry-access): ``monitoring`` es un MAPA en
+    ``src.config`` — la ruta se lee con ``.get``, jamás por atributo
+    (acceso por atributo revienta con ``AttributeError``). Filtra por
+    modo: la línea futura encadena a futuros. Sin ruta o sin registro
+    → ``None`` (memoria vacía, jamás excepción).
+    """
+    path = (getattr(cfg, "monitoring", None) or {}).get("registry_path")
+    if not path:
+        return None
+    registro = load_registry(path)
+    return latest_record(registro, mode=mode)
+
 
 def load_real_sources() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Lee los CSVs reales y devuelve (demand, capacity, pickup, demand_aliased, capacity_aliased).
@@ -489,12 +507,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         # histéresis: mismo trato que la corrida operativa (runner) — la
         # selección as-of retiene al incumbente del registro salvo ventaja
-        # material, para que el KPI publicado mida el mix que opera
-        try:
-            registro = load_registry(cfg.monitoring.registry_path)
-            previous_run = latest_record(registro)
-        except (OSError, ValueError):
-            previous_run = None
+        # material, para que el KPI publicado mida el mix que opera.
+        # Memoria por línea (openspec 2026-11-10-registry-mode-memory):
+        # el modo futuro encadena al último registro futuro.
+        previous_run = _incumbente_previo(cfg, mode="futuro")
         sel_eval = (
             select_per_property(
                 folds_eval,
