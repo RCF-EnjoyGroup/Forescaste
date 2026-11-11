@@ -1472,6 +1472,15 @@ def generate_visual_report(
     if rev_lead_img:
         rev_extra += _img_tag(rev_lead_img, "convergencia por anticipación")
     rev_extra += _table_backtest_lead_band(backtest_report)
+    # legibilidad (openspec 2026-11-11-backtest-grid-legibilidad): el n
+    # desigual de la sección se explica en el propio reporte — nunca en
+    # una conversación aparte.
+    _grid_note = (backtest_report or {}).get("grid_note")
+    if _grid_note:
+        rev_extra += (
+            '<p style="font-size:0.78em;color:#64748b;margin:8px 0 0 0">'
+            f"{_grid_note}</p>"
+        )
 
     precision = [
         _card("Benchmark", _chart_benchmark(benchmark, champion)),

@@ -159,6 +159,15 @@ El reporte HTML SHALL ser legible sin conocimiento previo del motor: cada secci�
 - **THEN** `scripts/regen_report.py` reconstruye `report.html` de una corrida existente desde sus entregables, sin re-entrenar ni re-correr el pipeline
 
 
+### Requirement: Backtest de snapshots diagnóstico (T-90..T-1 por propiedad)
+El backtest muestreado de snapshots SHALL ser diagnóstico: mide al campeón que opera en cada propiedad contra sus reales T-90..T-1 para el desglose por banda de lead y el tracking de convergencia. Su rejilla de evaluación SHALL declarar el guard de costo (modelos baratos con rejilla completa; modelos costosos con rejilla reducida) y SHALL explicar en el propio reporte por qué el `n_obs` difiere entre propiedades — la desigualdad refleja el campeón que opera, no data faltante.
+
+#### Scenario: El n desigual se explica en el propio reporte
+- **WHEN** el backtest muestreado emite `backtesting_report.json` con `n_obs` desigual entre propiedades (56 baratos vs 16 costosos, guard de costo del campeón que opera)
+- **THEN** el reporte incluye `grid_note` explicando de dónde sale el n, que el propósito es diagnóstico (cada propiedad contra sí misma entre corridas, métricas relativas) y que la selección del campeón y las bandas P10/P90 usan la evidencia de rejilla común del benchmark de folds
+- **THEN** el HTML renderiza `grid_note` al pie de la tarjeta "Revisiones T-90..T-1 · por propiedad" — la pregunta "¿por qué n distinto?" se responde en el reporte, no en una conversación aparte
+
+
 ### Requirement: Reporte mensual de vintages por corte
 El sistema SHALL proveer un entregable de negocio con la matriz de vintages mensual: para cada corte del día 15 de cada mes (mientras existan reales a esa fecha), la proyección del mes en curso + los 2 siguientes, contra el real de cada mes proyectado. El mes en curso al corte SHALL proyectarse como cierre de mes (reales 1-15 + pronóstico 16-fin); los modelos SHALL ajustarse as-of el corte (historia ≤ corte, sin fuga); los meses sin reales completos SHALL quedar vacíos (nunca inventados); la metodología y sus salvedades SHALL declararse en el propio archivo.
 

@@ -351,6 +351,23 @@ def _sampled_backtest(
             "cheap": list(BACKTEST_LEADS_CHEAP),
             "expensive": list(BACKTEST_LEADS_EXPENSIVE),
         },
+        # legibilidad (openspec 2026-11-11-backtest-grid-legibility): el n
+        # por propiedad refleja el campeón que opera y su rejilla de costo
+        # — sin la nota, "n=56 vs n=16" se lee como data faltante.
+        "grid_note": (
+            "n = puntos de evaluación del campeón que opera en cada "
+            f"propiedad: modelos baratos (pickup_curve, seasonal_naive) "
+            f"{len(BACKTEST_LEADS_CHEAP)} leads × {int(cfg['n_stays'])} "
+            f"estancias = {len(BACKTEST_LEADS_CHEAP) * int(cfg['n_stays'])}; "
+            f"modelos costosos (ML/ETS/SARIMAX) {len(BACKTEST_LEADS_EXPENSIVE)} "
+            f"× {int(cfg['n_stays_expensive'])} = "
+            f"{len(BACKTEST_LEADS_EXPENSIVE) * int(cfg['n_stays_expensive'])} "
+            "(guard de costo). Reporte diagnóstico: cada propiedad se compara "
+            "contra sí misma entre corridas y las métricas son relativas "
+            "(WMAPE). La selección del campeón y las bandas P10/P90 usan la "
+            "evidencia de rejilla común del benchmark de folds (mismos folds "
+            "y horizonte completo para los 7 candidatos)."
+        ),
         "sampled_stays": sorted(str(pd.Timestamp(d).date()) for d in frame["stay_date"].unique()),
         "global": _jsonable(global_metrics),
         "by_lead_band": _jsonable(by_lead_band),

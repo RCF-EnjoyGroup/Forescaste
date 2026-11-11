@@ -196,7 +196,7 @@ src/
 ├── explainability/      # importancia de features + SHAP
 ├── monitoring/          # drift YoY, outliers, re-entrenamiento, registro entre corridas, tracking vintage, manifiesto
 └── reporting/           # benchmark, tabla de forecast, KPIs, dataset Power BI, entregables
-tests/                   # 488 tests
+tests/                   # 490 tests
 openspec/                # specs, propuestas y changelog del proyecto
 ```
 
@@ -300,7 +300,7 @@ openspec/                # specs, propuestas y changelog del proyecto
 ## Tests
 
 ```bash
-python -m pytest -q          # 488 tests
+python -m pytest -q          # 490 tests
 ```
 
 Cobren la cadena completa (e2e), esquema alternativo, as-of/leakage,

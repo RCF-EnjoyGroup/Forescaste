@@ -1012,6 +1012,65 @@ def test_sampled_backtest_emite_desglose_por_propiedad_y_banda():
         assert {"property", "lead_band", "n_obs", "wmape", "mape"} <= set(r)
 
 
+def test_sampled_backtest_emite_grid_note_con_ambas_rejillas():
+    """El n desigual del backtest muestreado se explica en el propio reporte
+    (openspec 2026-11-11-backtest-grid-legibilidad)."""
+    from src.forecasting.runner import _sampled_backtest
+    from tests.test_remediation import _demand_2props, _pickup_2props
+
+    dem = _demand_2props(n=400)
+    pick = _pickup_2props(dem)
+    history = dem.rename(columns={"rooms_sold": "room_nights"})
+    pickup = pick.rename(
+        columns={
+            "hotel": "property", "stay": "stay_date", "snap": "snapshot_date",
+            "lead": "lead_days", "booked_rn": "pickup_rn",
+        }
+    )
+    report, _, _ = _sampled_backtest(
+        history, pickup,
+        {"corin": "seasonal_naive", "fiesta": "seasonal_naive"},
+        pd.Timestamp("2026-06-20"),
+        backtest_cfg={"n_stays": 4, "lookback_days": 30},
+    )
+    note = report.get("grid_note") or ""
+    assert "guard de costo" in note, "la nota debe citar el guard de costo"
+    assert "pickup_curve" in note and "seasonal_naive" in note, (
+        "la nota debe nombrar los modelos baratos (los de rejilla completa)"
+    )
+    assert "rejilla común" in note, (
+        "la nota debe declarar que selección y bandas usan la rejilla común "
+        "del benchmark de folds — la respuesta al 'papas con papas'"
+    )
+
+
+def test_reporte_visual_renderiza_grid_note(tmp_path):
+    """La tarjeta 'Revisiones T-90..T-1' incluye la nota del n desigual."""
+    fc = _fc_multi_propiedad()
+    bt = {
+        "protocol": "snapshots",
+        "by_property": [
+            {"property": "SJOSL", "model": "pickup_curve", "wmape": 0.10, "n_obs": 56},
+            {"property": "FIESTA", "model": "lightgbm", "wmape": 0.05, "n_obs": 16},
+        ],
+        "by_lead_band": [
+            {"lead_band": "1-2", "wmape": 0.03, "n_obs": 8, "mape": 4.0,
+             "mae": 1.0, "rmse": 1.2, "bias": 0.0},
+        ],
+        "by_property_lead_band": [
+            {"property": "SJOSL", "lead_band": "1-2", "wmape": 0.03},
+            {"property": "FIESTA", "lead_band": "1-2", "wmape": 0.02},
+        ],
+        "grid_note": "NOTA-DE-REJILLA-DE-PRUEBA",
+    }
+    out = generate_visual_report(tmp_path, fc, backtest_report=bt)
+    html = out.read_text(encoding="utf-8")
+    assert "Revisiones T-90..T-1" in html
+    assert "NOTA-DE-REJILLA-DE-PRUEBA" in html, (
+        "grid_note debe renderizarse al pie de la tarjeta"
+    )
+
+
 def test_fmt_metrics_escala_por_clave():
     """La tabla Métricas habla en %/enteros, no en fracciones crudas."""
     html = _fmt_metrics(
