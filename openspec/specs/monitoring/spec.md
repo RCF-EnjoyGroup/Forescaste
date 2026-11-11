@@ -69,6 +69,14 @@ El sistema SHALL persistir un registro append-only entre corridas con: métricas
 - **THEN** el default OFF quedó fijado por el A/B replay del 2026-11-05: la señal (errores de la publicación previa) solo observa leads cortos ya calibrados por el piso de reservas — cuando disparó, sobre-corrigió (cobertura FIESTA 90.8%→81.7%) y el drift real (leads 14-59) queda fuera de su alcance temporal; la maquinaria queda como knob a la espera de la variante de señal de publicación antigua
 
 
+#### Scenario: Memoria por línea de corrida (modo)
+- **WHEN** una corrida pide su estado previo al registro (`previous_run`)
+- **THEN** lo toma del último registro del MISMO modo (`real` para verificación, `futuro` para publicación operativa, `ad hoc` para corridas sueltas)
+- **THEN** la histéresis del campeón, la memoria de drift de métricas y el estado de re-entrenamiento consumen ese registro de su propia línea — jamás el de la otra
+- **THEN** si no existe registro previo de ese modo, la memoria arranca vacía y el manifiesto lo declara — nunca herencia cruzada silenciosa entre líneas
+- **THEN** los consumidores de la línea operativa (`previous_operational`, `select_gradable_publication` — que ya filtraban `mode="futuro"`) quedan como referencia del patrón, sin cambio de comportamiento
+- **THEN** la regla quedó validada con el replay del registro real (2026-11-10): 24 de 36 corridas cargaban memoria de la otra línea; el caso que motivó el cambio (`real-20261105-1442`, brazo B del A/B de bias) heredaba `sarimax` de una corrida futura y con la regla hereda la última real (`lightgbm`), dejando los brazos del A/B comparables en modelo
+
 ### Requirement: Detección de outliers sin eliminación automática
 El sistema SHALL detectar eventos, picos anormales, caídas abruptas, cierres, cambios de inventario, datos faltantes y cambios estructurales, clasificándolos sin eliminarlos automáticamente.
 

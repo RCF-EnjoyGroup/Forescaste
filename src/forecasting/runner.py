@@ -646,14 +646,20 @@ def run_end_to_end(
 
     # registro entre corridas (estado real del monitoreo): sin ruta →
     # corrida hermética sin estado (tests); con ruta → drift 10.1 contra la
-    # corrida anterior, histéresis del campeón y tracking vintage
+    # corrida anterior, histéresis del campeón y tracking vintage.
+    # Memoria POR LÍNEA (openspec 2026-11-10-registry-mode-memory): la
+    # verificación real y la publicación operativa futura comparten archivo,
+    # pero su estado previo se toma del último registro del MISMO modo —
+    # histéresis, drift y retraining jamás heredan de la otra línea (el caso
+    # que contaminó el A/B de bias del 5-nov: un brazo real heredó sarimax de
+    # una futura). Sin registro del modo → memoria vacía, declarada.
     previous_run: dict[str, Any] | None = None
     previous_operational: dict[str, Any] | None = None
     registry: dict[str, Any] | None = None
     if registry_path is not None:
         try:
             registry = load_registry(registry_path)
-            previous_run = latest_record(registry)
+            previous_run = latest_record(registry, mode=str(run_mode))
             previous_operational = latest_record(registry, mode="futuro")
         except Exception as exc:  # el registro jamás rompe la corrida
             print(f"[aviso] registro de corridas ilegible ({exc}); corrida sin estado")
