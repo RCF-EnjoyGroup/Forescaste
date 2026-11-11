@@ -48,8 +48,11 @@ from src.forecasting.core import (
 MESES = ["ene", "feb", "mar", "abr", "may", "jun",
          "jul", "ago", "sep", "oct", "nov", "dic"]
 
-# selección operativa vigente (corrida futura 2026-10-26)
-MODELOS = {
+# snapshot histórico (selección operativa del 26-oct): SOLO fallback
+# cuando el registro entre corridas no está disponible (declarado).
+# Con registro, la selección sale anclada por corte (ver
+# _modelos_por_corte) — openspec 2026-11-10-monthly-report-operative-models.
+MODELOS_FALLBACK = {
     "CORIN": "pickup_curve",
     "FIESTA": "seasonal_naive",
     "LIREL": "pickup_curve",
@@ -57,6 +60,38 @@ MODELOS = {
     "SJOSL": "pickup_curve",
     "VILLAS": "pickup_curve",
 }
+
+
+def _modelos_por_corte(
+    records: list[dict], corte: pd.Timestamp
+) -> tuple[dict[str, str], str]:
+    """Selección operativa vigente AS-OF del corte, desde el registro.
+
+    Memoria por línea (openspec 2026-11-10-registry-mode-memory): la
+    última corrida futura con ``cutoff <= corte`` — la selección que
+    operaba cuando el corte "ocurrió". Cortes previos al motor (ene→jul):
+    el registro futuro más antiguo disponible (declarado). Sin registro:
+    el snapshot histórico (declarado). Ninguna selección es silenciosa.
+    """
+    futuros = [
+        r for r in records
+        if str(r.get("mode")) == "futuro" and (r.get("model_by_property") or {})
+    ]
+    if not futuros:
+        return dict(MODELOS_FALLBACK), "fallback-fijo"
+
+    def _clave(r: dict) -> tuple[pd.Timestamp, str]:
+        c = pd.to_datetime(r.get("cutoff"), errors="coerce")
+        c = corte if pd.isna(c) else pd.Timestamp(c)
+        return (c, str(r.get("timestamp") or ""))
+
+    candidatos = [r for r in futuros if _clave(r)[0] <= corte]
+    if candidatos:
+        elegido = max(candidatos, key=_clave)
+        return dict(elegido["model_by_property"]), f"registro:{elegido.get('run_id')}"
+    # cortes previos al motor: el registro más antiguo, declarado
+    antiguo = min(futuros, key=_clave)
+    return dict(antiguo["model_by_property"]), f"registro-mas-antiguo:{antiguo.get('run_id')}"
 
 
 def _load_all():
@@ -91,13 +126,24 @@ def main(out_path: str | None = None) -> int:
     curve_params = dict(cfg.pickup_curve)
     ultimo_real = pd.Timestamp(dem["stay_date"].max())
 
+    # selección operativa por corte desde el registro entre corridas
+    import json
+
+    from src.monitoring.run_registry import load_registry
+
+    registry_path = dict(cfg.monitoring or {}).get(
+        "registry_path", "outputs/monitoring/run_registry.json"
+    )
+    records = load_registry(registry_path).get("records") or []
+
     # reales mensuales por propiedad
     d = dem.copy()
     d["ym"] = d["stay_date"].dt.to_period("M")
     reales = d.groupby(["property", "ym"])["room_nights"].sum()
 
     rows = []
-    for mes_corte in range(1, 11):  # cortes 15-ene ... 15-oct 2026
+    fuentes_por_corte: dict[pd.Timestamp, tuple[dict[str, str], str]] = {}
+    for mes_corte in range(1, 13):  # cortes 15-ene ... 15-dic 2026
         corte = pd.Timestamp(2026, mes_corte, 15)
         if corte > ultimo_real:
             continue
@@ -108,9 +154,11 @@ def main(out_path: str | None = None) -> int:
             fin_horizonte = pd.Timestamp("2026-12-31")
         horizonte = (fin_horizonte - corte).days
 
+        modelos, fuente = _modelos_por_corte(records, corte)
+        fuentes_por_corte[corte] = (modelos, fuente)
         try:
             raw, _, _ = build_forecasts(
-                MODELOS, dem, pick, corte, horizonte, curve_params, cal,
+                modelos, dem, pick, corte, horizonte, curve_params, cal,
             )
         except Exception as exc:
             print(f"[aviso] corte {corte.date()}: {exc}")
@@ -158,6 +206,8 @@ def main(out_path: str | None = None) -> int:
     df = pd.DataFrame(rows)
     out = Path(out_path or (_ROOT / "outputs" / "reporte_mensual_vintages_2026.xlsx"))
     out.parent.mkdir(parents=True, exist_ok=True)
+    fuentes = {f for _, f in fuentes_por_corte.values()}
+    modelos_ultimo = fuentes_por_corte[max(fuentes_por_corte)][0] if fuentes_por_corte else {}
     with pd.ExcelWriter(out, engine="openpyxl") as xw:
         df.to_excel(xw, sheet_name="vintages", index=False)
         # hoja de lectura
@@ -167,8 +217,13 @@ def main(out_path: str | None = None) -> int:
                 "Mes en curso al corte: RN Pronosticado = reales 1-15 + pronóstico 16-fin (proyección de cierre).",
                 "Meses futuros al corte: RN Pronosticado = pronóstico del mes completo.",
                 "RN Real: reales del mes completo; vacío si el mes no ha terminado.",
-                "Los modelos son los operativos vigentes del motor, ajustados AS-OF cada corte (sin ver el futuro): reconstrucción honesta, no lo publicado entonces.",
-                "Cortes nov-15 y dic-15 aún no existen (reales al 25-oct): nov y dic tienen menos vintages.",
+                "Los modelos salen del registro entre corridas (última corrida futura con corte <= el corte proyectado: la selección operativa vigente a esa fecha), ajustados AS-OF cada corte (sin ver el futuro): reconstrucción honesta, no lo publicado entonces.",
+                f"Los reales de meses cerrados no cambian entre regeneraciones salvo conciliación del PMS; solo el mes en curso crece (reales al {ultimo_real.date()}).",
+                f"Sello de versión — generado: {pd.Timestamp.now():%Y-%m-%d %H:%M} | data hasta: {ultimo_real.date()}",
+                f"Regla de selección: {fuentes and sorted(fuentes) or ['fallback-fijo']} (memoria por línea, openspec 2026-11-10-registry-mode-memory)",
+                "Modelos por propiedad (corte más reciente): "
+                + (", ".join(f"{p}={m}" for p, m in sorted(modelos_ultimo.items())) or "—"),
+                f"Mapas de modelos distintos entre cortes del archivo: {len({json.dumps(m, sort_keys=True) for m, _ in fuentes_por_corte.values()})}",
             ],
         })
         lectura.to_excel(xw, sheet_name="lectura", index=False)
